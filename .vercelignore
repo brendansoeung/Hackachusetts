@@ -1,0 +1,7 @@
+# Files the live site doesn't need
+tests/
+scripts/
+.kiro/
+.env
+.env.*
+.test-output.txt

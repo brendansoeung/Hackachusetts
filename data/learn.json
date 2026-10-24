@@ -1,0 +1,131 @@
+{
+  "sections": [
+    {
+      "id": "not_recommended",
+      "title": "Not recommended: MakeWeight will never suggest these",
+      "intro": "Some of these are still common in wrestling rooms. They either barely move the scale or they cost you strength, cardio and focus right when you need it, and some have killed athletes. Even where research allows a method under medical supervision, MakeWeight leaves it out, because nobody is supervising you at home.",
+      "cards": [
+        {
+          "id": "vomiting",
+          "title": "Forced vomiting",
+          "what": "Making yourself throw up after eating or drinking to drop weight.",
+          "healthRisk": "You lose fluid and electrolytes like potassium. Low potassium can cause dangerous heart rhythm problems. Stomach acid damages your throat and teeth, and the habit is strongly linked to eating disorders.",
+          "performanceCost": "You throw away the fuel and fluid you need to wrestle, and you start the match dehydrated and drained.",
+          "saferAlternative": "Plan your last meal and drink by the clock (the Plan tab does this), and lean on low-fiber, lower-salt foods in the final days.",
+          "sources": ["medline", "nfhs"]
+        },
+        {
+          "id": "salt_bath",
+          "title": "Hot salt baths",
+          "what": "Soaking in very hot water with Epsom salt to sweat out water.",
+          "healthRisk": "Passive sweating in heat drives dehydration fast and raises your body temperature, which raises the risk of heat illness. NFHS's sports medicine committee lists hot baths among dangerous dehydration methods.",
+          "performanceCost": "Dehydration over 3 to 5% of body weight cuts strength and muscular endurance.",
+          "saferAlternative": "Use the capped water plan (5% max, final days only) and extra light cardio in normal clothes.",
+          "sources": ["nfhs", "cdc1998"]
+        },
+        {
+          "id": "sauna",
+          "title": "Saunas and steam rooms",
+          "what": "Sitting in a sauna, steam room or hot car to sweat weight off.",
+          "healthRisk": "Heat plus dehydration can cause heat stroke, muscle breakdown (rhabdomyolysis), kidney failure and cardiac arrest. NFHS's sports medicine committee says steam rooms and hot rooms should be prohibited for wrestlers.",
+          "performanceCost": "You lose water you can't fully replace before a same-day match, so you compete weaker and slower.",
+          "saferAlternative": "Start earlier so more of your cut comes from fat at about 1% a week.",
+          "sources": ["nfhs", "cdc1998"]
+        },
+        {
+          "id": "suits",
+          "title": "Rubber or plastic suits",
+          "what": "Training in sauna suits, trash bags or plastic wraps to sweat more.",
+          "healthRisk": "Suits trap heat so your body can't cool down. In 1997, three college wrestlers died of heat and dehydration while rapidly cutting weight with methods like these.",
+          "performanceCost": "You get tired faster in practice and lose water that you need back before you compete.",
+          "saferAlternative": "Do your extra cardio in normal practice clothes. It still works, and you can actually train hard.",
+          "sources": ["cdc1998", "nfhs"]
+        },
+        {
+          "id": "diuretics",
+          "title": "Diuretics (water pills)",
+          "what": "Pills or supplements that make you pee out water.",
+          "healthRisk": "They flush out electrolytes along with water, which can cause cramps and heart rhythm problems.",
+          "performanceCost": "You lose salt and water that are hard to get back in time, so you cramp and fade.",
+          "saferAlternative": "Normal salt during water loading, lower salt only in the final day, per the Plan tab.",
+          "sources": ["nfhs", "issn", "medline"]
+        },
+        {
+          "id": "laxatives",
+          "title": "Laxatives",
+          "what": "Taking laxatives to empty your gut before weigh-in.",
+          "healthRisk": "They can cause electrolyte imbalances and impaired heart function, plus dehydration and low potassium.",
+          "performanceCost": "NFHS notes it only yields small impacts on body mass, and you lose energy and glycogen you need on the mat.",
+          "saferAlternative": "A low-fiber diet (under 10 g a day) in the final days lightens your gut with no pills.",
+          "sources": ["nfhs", "medline", "issn"]
+        },
+        {
+          "id": "spitting",
+          "title": "Spitting",
+          "what": "Spitting into a cup or bottle for hours before weigh-in.",
+          "healthRisk": "Mostly it leaves you dry-mouthed, miserable and distracted.",
+          "performanceCost": "It barely moves the scale, so it's wasted time and energy you could spend resting.",
+          "saferAlternative": "Rest, stay calm, and trust the plan.",
+          "sources": ["mw"]
+        },
+        {
+          "id": "no_fluids",
+          "title": "Skipping all fluids",
+          "what": "Not drinking anything for a day or more before weigh-in.",
+          "healthRisk": "Severe dehydration lowers blood volume and strains your heart and kidneys. Dehydrated wrestlers also score worse on concussion tests.",
+          "performanceCost": "Over 3 to 5% dehydration means less strength and endurance, and you can't fully rehydrate in under an hour.",
+          "saferAlternative": "The plan's cut-back day still keeps fluids above zero (sips through the day).",
+          "sources": ["nfhs", "reale"]
+        }
+      ]
+    },
+    {
+      "id": "safety",
+      "title": "Safety",
+      "cards": [
+        {
+          "id": "water_loading",
+          "title": "Water loading: read this first",
+          "what": "Drinking about 100 mL per kg of body weight a day for 3 days, then cutting back to about 15 mL per kg the day before weigh-in. In one study of adult male combat athletes, this dropped about 0.6% more body weight than normal drinking, with blood electrolytes staying in normal ranges.",
+          "healthRisk": "Drinking a lot of water while cutting salt can drop your blood sodium too low (hyponatremia), which is dangerous. The study was done on adults, not high schoolers. NFHS's sports medicine committee lists water loading among dehydration methods and warns against intentional dehydration for high school wrestlers.",
+          "performanceCost": "Done carelessly it leaves you dehydrated at weigh-in with little time to recover.",
+          "saferAlternative": "Keep salt normal on loading days, spread the water across the whole day, never go to zero fluids, and talk to your athletic trainer or doctor first. MakeWeight and its AI coach are not medical professionals.",
+          "sources": ["reale", "issn", "nfhs", "nata"]
+        },
+        {
+          "id": "get_help",
+          "title": "Stop and get help",
+          "what": "Stop cutting and get help from an athletic trainer, doctor or 911 right away if you have any of these: dizziness, confusion, fainting, a racing heart at rest, chest pain, cramps that won't stop, or you haven't peed in many hours.",
+          "healthRisk": "These are signs of dangerous dehydration or heat illness.",
+          "performanceCost": "No match is worth it.",
+          "saferAlternative": "Sip an electrolyte drink, get somewhere cool, and tell an adult. If you're struggling with food, your body or thoughts of hurting yourself, call or text 988 (Suicide and Crisis Lifeline) any time.",
+          "sources": ["nfhs", "medline"]
+        },
+        {
+          "id": "disclaimer",
+          "title": "MakeWeight is not medical advice",
+          "what": "MakeWeight and its AI coach are tools for education and planning. They are not doctors, dietitians or athletic trainers.",
+          "healthRisk": "Everyone's body is different. Health conditions and medications change what's safe for you.",
+          "performanceCost": "",
+          "saferAlternative": "Check your plan with your athletic trainer, school nurse or doctor, especially if you're under 18.",
+          "sources": ["mw"]
+        }
+      ]
+    },
+    {
+      "id": "story",
+      "title": "Why I built this",
+      "cards": [
+        {
+          "id": "my_story",
+          "title": "My story",
+          "what": "[FOUNDER: write 2 to 3 sentences here in your own words. Example: I wrestled 106 in high school and placed at states. I cut from as high as 120, made mistakes like forced vomiting and salt baths, overate before wrestling first, and cramped from bad electrolytes. MakeWeight is the tool I wish I had.]",
+          "healthRisk": "",
+          "performanceCost": "",
+          "saferAlternative": "",
+          "sources": ["mw"]
+        }
+      ]
+    }
+  ]
+}

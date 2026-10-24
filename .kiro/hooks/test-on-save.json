@@ -1,0 +1,16 @@
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "Run tests on save",
+      "trigger": "PostFileSave",
+      "description": "Runs the full MakeWeight test suite whenever a JavaScript or JSON file is saved, so safety rules never silently break.",
+      "matcher": "\\.(js|mjs|json)$",
+      "action": {
+        "type": "command",
+        "command": "npm test",
+        "timeout": 120
+      }
+    }
+  ]
+}

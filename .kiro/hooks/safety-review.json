@@ -1,0 +1,15 @@
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "Safety review on edit",
+      "trigger": "PostFileSave",
+      "description": "When a safety-critical file changes, Kiro double-checks the change against the product safety rules.",
+      "matcher": "(limits|rules|alerts|recovery|coach-shared|coach)\\.js$|learn\\.json$",
+      "action": {
+        "type": "agent",
+        "prompt": "A safety-critical MakeWeight file was just saved. Review the change against .kiro/steering/product.md: (1) safety limits only change in js/limits.js and still match the universal rules (1%/week fat, 3%/week red, 5% water cap, recovery<33, RHR +7, sleep<70); (2) nothing recommends a banned method (vomiting, salt/hot baths, saunas/steam, rubber suits, diuretics, laxatives, spitting, zero fluids); (3) every recommendation still cites a source key from js/sources.js; (4) the water loading warning (hyponatremia, adults-only research, NFHS, not medical professionals) is intact; (5) the AI coach still receives numbers only. Report any problem briefly and suggest a fix."
+      }
+    }
+  ]
+}
