@@ -1,7 +1,9 @@
-import { test } from 'node:test';
+import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { handleCoach, RateLimiter, extractText, extractGenerateText, callGemini } from '../api/coach.js';
+import { handleCoach, RateLimiter, extractText, callGemini, quotaCooldown } from '../api/coach.js';
+
+beforeEach(() => quotaCooldown.clear());
 import { sanitizeContext, sanitizeHistory, SYSTEM_PROMPT, BRIEFING_TASK, BANNED_METHODS, buildInput, hasIdentifyingKeys } from '../js/coach-shared.js';
 import { buildCoachContext, shouldRefreshBriefing, rulesBriefing, askCoach } from '../js/coach.js';
 import { buildDemoState } from '../js/storage.js';
@@ -198,31 +200,26 @@ test('if the model rejects thinking_level, the call retries once without it', as
   assert.equal(f.calls[1].body.generation_config.thinking_level, undefined);
 });
 
-const generateOk = (text) => ({
-  ok: true,
-  status: 200,
-  json: async () => ({ candidates: [{ content: { parts: [{ text: 'thinking...', thought: true }, { text }] } }] }),
-});
 const fail = (status, code = '') => ({ ok: false, status, json: async () => ({ error: { status: code } }) });
+const FALLBACK = 'gemini-flash-lite-latest';
 
-test('falls back to the classic generateContent API when the Interactions API fails', async () => {
-  const f = fakeFetch([fail(404, 'NOT_FOUND'), fail(404, 'NOT_FOUND'), generateOk('Fallback answer')]);
+test('falls back to the second model when the main model fails', async () => {
+  const f = fakeFetch([fail(404, 'NOT_FOUND'), fail(404, 'NOT_FOUND'), geminiOk('Fallback answer')]);
   const text = await callGemini({ apiKey: 'k', model: 'm', system: 'sys', input: 'in', maxTokens: 100, fetchImpl: f });
   assert.equal(text, 'Fallback answer');
   assert.equal(f.calls.length, 3);
-  assert.match(f.calls[2].url, /\/models\/m:generateContent$/);
-  assert.equal(f.calls[2].body.systemInstruction.parts[0].text, 'sys');
-  assert.equal(f.calls[2].body.contents[0].parts[0].text, 'in');
+  assert.match(f.calls[2].url, /\/v1beta\/interactions$/);
+  assert.equal(f.calls[2].body.model, FALLBACK);
+  assert.equal(f.calls[2].body.system_instruction, 'sys');
   assert.equal(f.calls[2].init.headers['x-goog-api-key'], 'k');
 });
 
-test('tries a second model last, and reports why every attempt failed', async () => {
+test('reports why every attempt failed', async () => {
   const f = fakeFetch([fail(400), fail(400), fail(404, 'NOT_FOUND'), fail(500, 'INTERNAL')]);
   await assert.rejects(
     callGemini({ apiKey: 'k', model: 'gemini-x', system: 's', input: 'i', maxTokens: 100, fetchImpl: f }),
-    (err) => err.status === 502 && err.reasons.length === 4 && /generate:gemini-2\.5-flash=500 INTERNAL/.test(err.reasons.at(-1)),
+    (err) => err.status === 502 && err.reasons.length === 4 && /gemini-flash-lite-latest\(no-thinking\)=500 INTERNAL/.test(err.reasons.at(-1)),
   );
-  assert.match(f.calls[3].url, /gemini-2\.5-flash:generateContent/);
 });
 
 test('a rejected key stops right away (no wasted retries)', async () => {
@@ -232,15 +229,30 @@ test('a rejected key stops right away (no wasted retries)', async () => {
 });
 
 test('a quota limit on one model skips straight to the fallback model', async () => {
-  const f = fakeFetch([fail(429, 'RESOURCE_EXHAUSTED'), generateOk('From the fallback model')]);
+  const f = fakeFetch([fail(429, 'RESOURCE_EXHAUSTED'), geminiOk('From the fallback model')]);
   const text = await callGemini({ apiKey: 'k', model: 'm', system: 's', input: 'i', maxTokens: 100, fetchImpl: f });
   assert.equal(text, 'From the fallback model');
   assert.equal(f.calls.length, 2, 'no more requests are spent on the out-of-quota model');
-  assert.match(f.calls[1].url, /gemini-2\.5-flash:generateContent/);
+  assert.equal(f.calls[1].body.model, FALLBACK);
 
+  quotaCooldown.clear();
   const both = fakeFetch([fail(429, 'RESOURCE_EXHAUSTED')]);
   await assert.rejects(callGemini({ apiKey: 'k', model: 'm', system: 's', input: 'i', maxTokens: 100, fetchImpl: both }), (e) => e.status === 429);
   assert.equal(both.calls.length, 2);
+});
+
+test('after a quota limit, the next requests go straight to the fallback for a minute', async () => {
+  let clock = 1_000_000;
+  const now = () => clock;
+  await callGemini({ apiKey: 'k', model: 'm', system: 's', input: 'i', maxTokens: 100, now, fetchImpl: fakeFetch([fail(429), geminiOk('a')]) });
+  const next = fakeFetch([geminiOk('b')]);
+  assert.equal(await callGemini({ apiKey: 'k', model: 'm', system: 's', input: 'i', maxTokens: 100, now, fetchImpl: next }), 'b');
+  assert.equal(next.calls.length, 1);
+  assert.equal(next.calls[0].body.model, FALLBACK, 'skips the model that just hit its quota');
+  clock += 61_000;
+  const later = fakeFetch([geminiOk('c')]);
+  await callGemini({ apiKey: 'k', model: 'm', system: 's', input: 'i', maxTokens: 100, now, fetchImpl: later });
+  assert.equal(later.calls[0].body.model, 'm', 'tries the main model again after the cooldown');
 });
 
 test('the error response says whether the key, the quota or Google was the problem', async () => {
@@ -259,11 +271,6 @@ test('the error response says whether the key, the quota or Google was the probl
   } finally {
     console.error = original;
   }
-});
-
-test('extractGenerateText skips thought parts', () => {
-  assert.equal(extractGenerateText({ candidates: [{ content: { parts: [{ text: 'hmm', thought: true }, { text: 'Answer' }] } }] }), 'Answer');
-  assert.equal(extractGenerateText({}), '');
 });
 
 test('extractText reads Interactions API responses', () => {

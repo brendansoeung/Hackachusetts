@@ -20,9 +20,14 @@ import {
 } from '../js/coach-shared.js';
 
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta';
+// Both are aliases Google keeps pointed at current models, so they don't go stale.
+// Each model has its own free-tier quota, so the Lite model is a real backup.
 const DEFAULT_MODEL = 'gemini-flash-latest';
-const FALLBACK_MODEL = 'gemini-2.5-flash';
+const FALLBACK_MODEL = 'gemini-flash-lite-latest';
 const ATTEMPT_TIMEOUT_MS = 12_000;
+const QUOTA_COOLDOWN_MS = 60_000;
+// Models that recently answered 429 (per server instance). Exported so tests can reset it.
+export const quotaCooldown = new Map();
 const TOTAL_BUDGET_MS = 26_000; // stays under the 30 s maxDuration in vercel.json
 const MAX_REPLY_CHARS = 2000;
 
@@ -73,17 +78,6 @@ export function extractText(data) {
     .trim();
 }
 
-/** Pulls the reply text out of a classic generateContent response (skipping "thought" parts). */
-export function extractGenerateText(data) {
-  const parts = data?.candidates?.[0]?.content?.parts;
-  if (!Array.isArray(parts)) return '';
-  return parts
-    .filter((p) => typeof p?.text === 'string' && !p.thought)
-    .map((p) => p.text)
-    .join('')
-    .trim();
-}
-
 export class GeminiError extends Error {
   constructor(message, status = 0, reasons = []) {
     super(message);
@@ -117,14 +111,18 @@ async function errorCode(res) {
   }
 }
 
-/** The ways we try to reach Gemini, in order. Later ones are fallbacks. */
-function attemptsFor({ model, system, input, maxTokens }) {
-  const interactions = (withThinking) => ({
-    model,
-    name: `interactions${withThinking ? '' : '-nothink'}:${model}`,
+/**
+ * The ways we try to reach Gemini (Interactions API), in order:
+ * main model with low thinking, then without the thinking setting (in case the
+ * model rejects it), then the same two for the fallback model.
+ */
+function attemptsFor({ model, fallbackModel, system, input, maxTokens }) {
+  const interactions = (m, withThinking) => ({
+    model: m,
+    name: `${m}${withThinking ? '' : '(no-thinking)'}`,
     url: `${GEMINI_BASE}/interactions`,
     body: {
-      model,
+      model: m,
       system_instruction: system,
       input,
       store: false,
@@ -132,35 +130,25 @@ function attemptsFor({ model, system, input, maxTokens }) {
         ? { max_output_tokens: maxTokens, temperature: 0.4, thinking_level: 'low' }
         : { max_output_tokens: maxTokens, temperature: 0.4 },
     },
-    extract: extractText,
   });
-  const generate = (m) => ({
-    model: m,
-    name: `generate:${m}`,
-    url: `${GEMINI_BASE}/models/${encodeURIComponent(m)}:generateContent`,
-    body: {
-      systemInstruction: { parts: [{ text: system }] },
-      contents: [{ role: 'user', parts: [{ text: input }] }],
-      generationConfig: { maxOutputTokens: maxTokens, temperature: 0.4 },
-    },
-    extract: extractGenerateText,
-  });
-  const list = [interactions(true), interactions(false), generate(model)];
-  if (model !== FALLBACK_MODEL) list.push(generate(FALLBACK_MODEL));
+  const list = [interactions(model, true), interactions(model, false)];
+  if (fallbackModel && fallbackModel !== model) list.push(interactions(fallbackModel, true), interactions(fallbackModel, false));
   return list;
 }
 
 /**
- * Calls Gemini, trying the Interactions API first and falling back to the
- * classic generateContent API (and a second model) if that fails.
+ * Calls Gemini, trying the main model and then the fallback model.
  * A 429 (quota) skips the rest of that model's attempts, since each model has
  * its own free-tier quota; a bad key (401/403) stops everything.
  */
-export async function callGemini({ apiKey, model, system, input, maxTokens, fetchImpl = fetch, now = Date.now }) {
+export async function callGemini({ apiKey, model, fallbackModel = FALLBACK_MODEL, system, input, maxTokens, fetchImpl = fetch, now = Date.now }) {
   const deadline = now() + TOTAL_BUDGET_MS;
   const reasons = [];
   const outOfQuota = new Set();
-  for (const attempt of attemptsFor({ model, system, input, maxTokens })) {
+  const all = attemptsFor({ model, fallbackModel, system, input, maxTokens });
+  // Skip models that hit their quota in the last minute, unless that would skip everything.
+  const fresh = all.filter((a) => !(quotaCooldown.get(a.model) > now()));
+  for (const attempt of fresh.length ? fresh : all) {
     if (outOfQuota.has(attempt.model)) continue;
     const remaining = deadline - now();
     if (remaining < 2000) {
@@ -179,6 +167,7 @@ export async function callGemini({ apiKey, model, system, input, maxTokens, fetc
       reasons.push(`${attempt.name}=${res.status}${code ? ` ${code}` : ''}`);
       if (res.status === 429) {
         outOfQuota.add(attempt.model);
+        quotaCooldown.set(attempt.model, now() + QUOTA_COOLDOWN_MS);
         continue;
       }
       if (res.status === 401 || res.status === 403) {
@@ -194,7 +183,7 @@ export async function callGemini({ apiKey, model, system, input, maxTokens, fetc
       reasons.push(`${attempt.name}=bad-json`);
       continue;
     }
-    const text = attempt.extract(data);
+    const text = extractText(data);
     if (text) return text.slice(0, MAX_REPLY_CHARS);
     reasons.push(`${attempt.name}=empty${data?.status ? `(${data.status})` : ''}`);
   }
@@ -254,6 +243,7 @@ export async function handleCoach({ method, body, ip = 'unknown', env = process.
     const text = await callGemini({
       apiKey,
       model: env.GEMINI_MODEL || DEFAULT_MODEL,
+      fallbackModel: env.GEMINI_FALLBACK_MODEL || FALLBACK_MODEL,
       system: SYSTEM_PROMPT,
       input: buildInput(mode, context, question, history),
       // Gemini counts its hidden "thinking" toward this cap, so leave room for it.
