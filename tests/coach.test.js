@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { handleCoach, RateLimiter, extractText, callGemini } from '../api/coach.js';
+import { handleCoach, RateLimiter, extractText, extractGenerateText, callGemini } from '../api/coach.js';
 import { sanitizeContext, sanitizeHistory, SYSTEM_PROMPT, BRIEFING_TASK, BANNED_METHODS, buildInput, hasIdentifyingKeys } from '../js/coach-shared.js';
 import { buildCoachContext, shouldRefreshBriefing, rulesBriefing, askCoach } from '../js/coach.js';
 import { buildDemoState } from '../js/storage.js';
@@ -161,7 +161,7 @@ test('a valid chat request sends the safety prompt, the context and the question
   assert.equal(sent.body.store, false);
   assert.match(sent.body.input, /Should I take a salt bath\?/);
   assert.match(sent.body.input, /"status":"yellow"/);
-  assert.ok(sent.body.generation_config.max_output_tokens <= 1000);
+  assert.ok(sent.body.generation_config.max_output_tokens <= 2048, 'output stays capped');
 });
 
 test('rate limit kicks in after 6 requests a minute per IP', async () => {
@@ -196,6 +196,63 @@ test('if the model rejects thinking_level, the call retries once without it', as
   assert.equal(f.calls.length, 2);
   assert.equal(f.calls[0].body.generation_config.thinking_level, 'low');
   assert.equal(f.calls[1].body.generation_config.thinking_level, undefined);
+});
+
+const generateOk = (text) => ({
+  ok: true,
+  status: 200,
+  json: async () => ({ candidates: [{ content: { parts: [{ text: 'thinking...', thought: true }, { text }] } }] }),
+});
+const fail = (status, code = '') => ({ ok: false, status, json: async () => ({ error: { status: code } }) });
+
+test('falls back to the classic generateContent API when the Interactions API fails', async () => {
+  const f = fakeFetch([fail(404, 'NOT_FOUND'), fail(404, 'NOT_FOUND'), generateOk('Fallback answer')]);
+  const text = await callGemini({ apiKey: 'k', model: 'm', system: 'sys', input: 'in', maxTokens: 100, fetchImpl: f });
+  assert.equal(text, 'Fallback answer');
+  assert.equal(f.calls.length, 3);
+  assert.match(f.calls[2].url, /\/models\/m:generateContent$/);
+  assert.equal(f.calls[2].body.systemInstruction.parts[0].text, 'sys');
+  assert.equal(f.calls[2].body.contents[0].parts[0].text, 'in');
+  assert.equal(f.calls[2].init.headers['x-goog-api-key'], 'k');
+});
+
+test('tries a second model last, and reports why every attempt failed', async () => {
+  const f = fakeFetch([fail(400), fail(400), fail(404, 'NOT_FOUND'), fail(500, 'INTERNAL')]);
+  await assert.rejects(
+    callGemini({ apiKey: 'k', model: 'gemini-x', system: 's', input: 'i', maxTokens: 100, fetchImpl: f }),
+    (err) => err.status === 502 && err.reasons.length === 4 && /generate:gemini-2\.5-flash=500 INTERNAL/.test(err.reasons.at(-1)),
+  );
+  assert.match(f.calls[3].url, /gemini-2\.5-flash:generateContent/);
+});
+
+test('a rejected key or a quota limit stops right away (no wasted retries)', async () => {
+  const badKey = fakeFetch([fail(403, 'PERMISSION_DENIED'), geminiOk()]);
+  await assert.rejects(callGemini({ apiKey: 'k', model: 'm', system: 's', input: 'i', maxTokens: 100, fetchImpl: badKey }), (e) => e.status === 403);
+  assert.equal(badKey.calls.length, 1);
+  const quota = fakeFetch([fail(429, 'RESOURCE_EXHAUSTED'), geminiOk()]);
+  await assert.rejects(callGemini({ apiKey: 'k', model: 'm', system: 's', input: 'i', maxTokens: 100, fetchImpl: quota }), (e) => e.status === 429);
+  assert.equal(quota.calls.length, 1);
+});
+
+test('the error response says whether the key, the quota or Google was the problem', async () => {
+  const run = async (responses) =>
+    handleCoach({ method: 'POST', body: { mode: 'briefing', context: {} }, env, fetchImpl: fakeFetch(responses), limiter: new RateLimiter() });
+  const original = console.error;
+  console.error = () => {}; // keep test output clean
+  try {
+    assert.equal((await run([fail(401)])).body.reason, 'key');
+    const q = await run([fail(429)]);
+    assert.equal(q.status, 503);
+    assert.equal(q.body.reason, 'quota');
+    assert.equal((await run([fail(500)])).body.reason, 'upstream');
+  } finally {
+    console.error = original;
+  }
+});
+
+test('extractGenerateText skips thought parts', () => {
+  assert.equal(extractGenerateText({ candidates: [{ content: { parts: [{ text: 'hmm', thought: true }, { text: 'Answer' }] } }] }), 'Answer');
+  assert.equal(extractGenerateText({}), '');
 });
 
 test('extractText reads Interactions API responses', () => {

@@ -19,9 +19,11 @@ import {
   sanitizeHistory,
 } from '../js/coach-shared.js';
 
-const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/interactions';
+const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 const DEFAULT_MODEL = 'gemini-flash-latest';
-const TIMEOUT_MS = 20_000;
+const FALLBACK_MODEL = 'gemini-2.5-flash';
+const ATTEMPT_TIMEOUT_MS = 12_000;
+const TOTAL_BUDGET_MS = 26_000; // stays under the 30 s maxDuration in vercel.json
 const MAX_REPLY_CHARS = 2000;
 
 const RATE_RULES = [
@@ -71,11 +73,30 @@ export function extractText(data) {
     .trim();
 }
 
-async function postGemini({ apiKey, body, fetchImpl }) {
+/** Pulls the reply text out of a classic generateContent response (skipping "thought" parts). */
+export function extractGenerateText(data) {
+  const parts = data?.candidates?.[0]?.content?.parts;
+  if (!Array.isArray(parts)) return '';
+  return parts
+    .filter((p) => typeof p?.text === 'string' && !p.thought)
+    .map((p) => p.text)
+    .join('')
+    .trim();
+}
+
+export class GeminiError extends Error {
+  constructor(message, status = 0, reasons = []) {
+    super(message);
+    this.status = status;
+    this.reasons = reasons;
+  }
+}
+
+async function postJson({ url, apiKey, body, fetchImpl, timeoutMs }) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetchImpl(GEMINI_URL, {
+    return await fetchImpl(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
       body: JSON.stringify(body),
@@ -86,29 +107,90 @@ async function postGemini({ apiKey, body, fetchImpl }) {
   }
 }
 
-/** Calls Gemini. Retries once without thinking_level if the model rejects that setting. */
-export async function callGemini({ apiKey, model, system, input, maxTokens, fetchImpl = fetch }) {
-  const body = {
-    model,
-    system_instruction: system,
-    input,
-    store: false,
-    generation_config: { max_output_tokens: maxTokens, temperature: 0.4, thinking_level: 'low' },
-  };
-  let res = await postGemini({ apiKey, body, fetchImpl });
-  if (res.status === 400) {
-    const retryBody = { ...body, generation_config: { max_output_tokens: maxTokens, temperature: 0.4 } };
-    res = await postGemini({ apiKey, body: retryBody, fetchImpl });
+/** Google's short error code (e.g. NOT_FOUND), never the key or the prompt. */
+async function errorCode(res) {
+  try {
+    const d = await res.json();
+    return String(d?.error?.status || d?.error?.code || '').slice(0, 40);
+  } catch {
+    return '';
   }
-  if (!res.ok) {
-    const err = new Error(`Gemini request failed with status ${res.status}`);
-    err.status = res.status;
-    throw err;
+}
+
+/** The ways we try to reach Gemini, in order. Later ones are fallbacks. */
+function attemptsFor({ model, system, input, maxTokens }) {
+  const interactions = (withThinking) => ({
+    name: `interactions${withThinking ? '' : '-nothink'}:${model}`,
+    url: `${GEMINI_BASE}/interactions`,
+    body: {
+      model,
+      system_instruction: system,
+      input,
+      store: false,
+      generation_config: withThinking
+        ? { max_output_tokens: maxTokens, temperature: 0.4, thinking_level: 'low' }
+        : { max_output_tokens: maxTokens, temperature: 0.4 },
+    },
+    extract: extractText,
+  });
+  const generate = (m) => ({
+    name: `generate:${m}`,
+    url: `${GEMINI_BASE}/models/${encodeURIComponent(m)}:generateContent`,
+    body: {
+      systemInstruction: { parts: [{ text: system }] },
+      contents: [{ role: 'user', parts: [{ text: input }] }],
+      generationConfig: { maxOutputTokens: maxTokens, temperature: 0.4 },
+    },
+    extract: extractGenerateText,
+  });
+  const list = [interactions(true), interactions(false), generate(model)];
+  if (model !== FALLBACK_MODEL) list.push(generate(FALLBACK_MODEL));
+  return list;
+}
+
+/**
+ * Calls Gemini, trying the Interactions API first and falling back to the
+ * classic generateContent API (and a second model) if that fails.
+ * Stops right away on 429 (quota) so we don't burn the free-tier limit.
+ */
+export async function callGemini({ apiKey, model, system, input, maxTokens, fetchImpl = fetch, now = Date.now }) {
+  const deadline = now() + TOTAL_BUDGET_MS;
+  const reasons = [];
+  for (const attempt of attemptsFor({ model, system, input, maxTokens })) {
+    const remaining = deadline - now();
+    if (remaining < 2000) {
+      reasons.push('out of time');
+      break;
+    }
+    let res;
+    try {
+      res = await postJson({ url: attempt.url, apiKey, body: attempt.body, fetchImpl, timeoutMs: Math.min(ATTEMPT_TIMEOUT_MS, remaining) });
+    } catch (err) {
+      reasons.push(`${attempt.name}=${err?.name === 'AbortError' ? 'timeout' : 'network'}`);
+      continue;
+    }
+    if (!res.ok) {
+      const code = await errorCode(res);
+      reasons.push(`${attempt.name}=${res.status}${code ? ` ${code}` : ''}`);
+      if (res.status === 429) throw new GeminiError('Gemini quota or rate limit reached', 429, reasons);
+      if (res.status === 401 || res.status === 403) {
+        // A bad key won't work on any endpoint; stop instead of retrying.
+        throw new GeminiError('Gemini rejected the API key', res.status, reasons);
+      }
+      continue;
+    }
+    let data;
+    try {
+      data = await res.json();
+    } catch {
+      reasons.push(`${attempt.name}=bad-json`);
+      continue;
+    }
+    const text = attempt.extract(data);
+    if (text) return text.slice(0, MAX_REPLY_CHARS);
+    reasons.push(`${attempt.name}=empty${data?.status ? `(${data.status})` : ''}`);
   }
-  const data = await res.json();
-  const text = extractText(data);
-  if (!text) throw new Error('Gemini returned no text');
-  return text.slice(0, MAX_REPLY_CHARS);
+  throw new GeminiError('All Gemini attempts failed', 502, reasons);
 }
 
 const json = (status, body, headers = {}) => ({ status, body, headers });
@@ -165,13 +247,21 @@ export async function handleCoach({ method, body, ip = 'unknown', env = process.
       model: env.GEMINI_MODEL || DEFAULT_MODEL,
       system: SYSTEM_PROMPT,
       input: buildInput(mode, context, question, history),
-      maxTokens: mode === 'briefing' ? 700 : 900,
+      // Gemini counts its hidden "thinking" toward this cap, so leave room for it.
+      // Replies are still kept short by the prompt and trimmed to 2000 characters.
+      maxTokens: 2048,
       fetchImpl,
     });
     return json(200, { text, source: 'ai' });
   } catch (err) {
+    // Log Google's status codes for debugging (visible in Vercel's function logs). Never the key or the prompt.
+    console.error('coach: gemini failed', err?.status, (err?.reasons || []).join(' | '));
     const status = err?.status === 429 ? 503 : 502;
-    return json(status, { error: 'The AI coach is unavailable right now. Showing the rules-based plan instead.' });
+    const reason =
+      err?.status === 429 ? 'quota'
+        : err?.status === 401 || err?.status === 403 ? 'key'
+          : 'upstream';
+    return json(status, { error: 'The AI coach is unavailable right now. Showing the rules-based plan instead.', reason });
   }
 }
 

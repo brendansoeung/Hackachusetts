@@ -2,7 +2,7 @@
 
 ## Stack
 - Plain HTML, CSS and vanilla JavaScript ES modules. No framework, no build step, no runtime dependencies.
-- One Vercel serverless function: `api/coach.js` (Google Gemini Interactions API, `POST /v1beta/interactions`).
+- One Vercel serverless function: `api/coach.js`. Tries the Gemini Interactions API (`POST /v1beta/interactions`) first, then falls back to `models/{model}:generateContent` and a second model (`gemini-2.5-flash`). Stops immediately on 401/403 (bad key) and 429 (quota). Logs Google's status codes (never the key or prompt) to Vercel's function logs.
 - PWA: `manifest.webmanifest` + `sw.js` (network-first, never caches `/api/`).
 - Tests: Node's built-in runner (`node --test`). `jsdom` (pinned, dev only) for the UI smoke test.
 
