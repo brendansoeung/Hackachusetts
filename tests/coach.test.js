@@ -225,13 +225,22 @@ test('tries a second model last, and reports why every attempt failed', async ()
   assert.match(f.calls[3].url, /gemini-2\.5-flash:generateContent/);
 });
 
-test('a rejected key or a quota limit stops right away (no wasted retries)', async () => {
+test('a rejected key stops right away (no wasted retries)', async () => {
   const badKey = fakeFetch([fail(403, 'PERMISSION_DENIED'), geminiOk()]);
   await assert.rejects(callGemini({ apiKey: 'k', model: 'm', system: 's', input: 'i', maxTokens: 100, fetchImpl: badKey }), (e) => e.status === 403);
   assert.equal(badKey.calls.length, 1);
-  const quota = fakeFetch([fail(429, 'RESOURCE_EXHAUSTED'), geminiOk()]);
-  await assert.rejects(callGemini({ apiKey: 'k', model: 'm', system: 's', input: 'i', maxTokens: 100, fetchImpl: quota }), (e) => e.status === 429);
-  assert.equal(quota.calls.length, 1);
+});
+
+test('a quota limit on one model skips straight to the fallback model', async () => {
+  const f = fakeFetch([fail(429, 'RESOURCE_EXHAUSTED'), generateOk('From the fallback model')]);
+  const text = await callGemini({ apiKey: 'k', model: 'm', system: 's', input: 'i', maxTokens: 100, fetchImpl: f });
+  assert.equal(text, 'From the fallback model');
+  assert.equal(f.calls.length, 2, 'no more requests are spent on the out-of-quota model');
+  assert.match(f.calls[1].url, /gemini-2\.5-flash:generateContent/);
+
+  const both = fakeFetch([fail(429, 'RESOURCE_EXHAUSTED')]);
+  await assert.rejects(callGemini({ apiKey: 'k', model: 'm', system: 's', input: 'i', maxTokens: 100, fetchImpl: both }), (e) => e.status === 429);
+  assert.equal(both.calls.length, 2);
 });
 
 test('the error response says whether the key, the quota or Google was the problem', async () => {
@@ -241,9 +250,11 @@ test('the error response says whether the key, the quota or Google was the probl
   console.error = () => {}; // keep test output clean
   try {
     assert.equal((await run([fail(401)])).body.reason, 'key');
-    const q = await run([fail(429)]);
+    const q = await run([fail(429, 'RESOURCE_EXHAUSTED')]);
     assert.equal(q.status, 503);
     assert.equal(q.body.reason, 'quota');
+    assert.ok(q.body.attempts.every((a) => /=429 RESOURCE_EXHAUSTED$/.test(a)), 'shows Google status codes only');
+    assert.ok(!JSON.stringify(q.body).includes('test-key'), 'never leaks the key');
     assert.equal((await run([fail(500)])).body.reason, 'upstream');
   } finally {
     console.error = original;

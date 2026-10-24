@@ -120,6 +120,7 @@ async function errorCode(res) {
 /** The ways we try to reach Gemini, in order. Later ones are fallbacks. */
 function attemptsFor({ model, system, input, maxTokens }) {
   const interactions = (withThinking) => ({
+    model,
     name: `interactions${withThinking ? '' : '-nothink'}:${model}`,
     url: `${GEMINI_BASE}/interactions`,
     body: {
@@ -134,6 +135,7 @@ function attemptsFor({ model, system, input, maxTokens }) {
     extract: extractText,
   });
   const generate = (m) => ({
+    model: m,
     name: `generate:${m}`,
     url: `${GEMINI_BASE}/models/${encodeURIComponent(m)}:generateContent`,
     body: {
@@ -151,12 +153,15 @@ function attemptsFor({ model, system, input, maxTokens }) {
 /**
  * Calls Gemini, trying the Interactions API first and falling back to the
  * classic generateContent API (and a second model) if that fails.
- * Stops right away on 429 (quota) so we don't burn the free-tier limit.
+ * A 429 (quota) skips the rest of that model's attempts, since each model has
+ * its own free-tier quota; a bad key (401/403) stops everything.
  */
 export async function callGemini({ apiKey, model, system, input, maxTokens, fetchImpl = fetch, now = Date.now }) {
   const deadline = now() + TOTAL_BUDGET_MS;
   const reasons = [];
+  const outOfQuota = new Set();
   for (const attempt of attemptsFor({ model, system, input, maxTokens })) {
+    if (outOfQuota.has(attempt.model)) continue;
     const remaining = deadline - now();
     if (remaining < 2000) {
       reasons.push('out of time');
@@ -172,7 +177,10 @@ export async function callGemini({ apiKey, model, system, input, maxTokens, fetc
     if (!res.ok) {
       const code = await errorCode(res);
       reasons.push(`${attempt.name}=${res.status}${code ? ` ${code}` : ''}`);
-      if (res.status === 429) throw new GeminiError('Gemini quota or rate limit reached', 429, reasons);
+      if (res.status === 429) {
+        outOfQuota.add(attempt.model);
+        continue;
+      }
       if (res.status === 401 || res.status === 403) {
         // A bad key won't work on any endpoint; stop instead of retrying.
         throw new GeminiError('Gemini rejected the API key', res.status, reasons);
@@ -190,7 +198,8 @@ export async function callGemini({ apiKey, model, system, input, maxTokens, fetc
     if (text) return text.slice(0, MAX_REPLY_CHARS);
     reasons.push(`${attempt.name}=empty${data?.status ? `(${data.status})` : ''}`);
   }
-  throw new GeminiError('All Gemini attempts failed', 502, reasons);
+  const allQuota = reasons.length > 0 && reasons.every((r) => / 429|=429/.test(r) || r === 'out of time');
+  throw new GeminiError(allQuota ? 'Gemini quota or rate limit reached' : 'All Gemini attempts failed', allQuota ? 429 : 502, reasons);
 }
 
 const json = (status, body, headers = {}) => ({ status, body, headers });
@@ -261,7 +270,9 @@ export async function handleCoach({ method, body, ip = 'unknown', env = process.
       err?.status === 429 ? 'quota'
         : err?.status === 401 || err?.status === 403 ? 'key'
           : 'upstream';
-    return json(status, { error: 'The AI coach is unavailable right now. Showing the rules-based plan instead.', reason });
+    // Google's status codes per attempt (e.g. "generate:gemini-2.5-flash=429 RESOURCE_EXHAUSTED"). No key, no prompt.
+    const attempts = (err?.reasons || []).slice(0, 6).map((r) => String(r).slice(0, 80));
+    return json(status, { error: 'The AI coach is unavailable right now. Showing the rules-based plan instead.', reason, attempts });
   }
 }
 
