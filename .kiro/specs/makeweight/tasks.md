@@ -1,7 +1,8 @@
 # Tasks: MakeWeight
 
 - [x] 1. Project setup: Node.js, folders, package.json, .gitignore, Kiro steering (product.md, tech.md), test-on-save and safety-review hooks
-- [ ] 1.1 Publish to a public GitHub repo and import into Vercel (needs the athlete's GitHub/Vercel login)
+- [x] 1.1 Publish to a public GitHub repo: https://github.com/brendansoeung/Hackachusetts
+- [x] 1.2 Import into Vercel: https://makeweight-six.vercel.app (auto-deploys from `main`)
 - [x] 2. Rules engine part 1: `classifyCut`, `safeBudget`, `assessGoal` with green/yellow/red verdicts
   - Tests: boundaries 7/8 and 35/36, 106-lb/3-day max start, 215+/12 weeks, 113 → 106/10 days, >3%/week red, >5% water red, invalid inputs
 - [x] 3. Rules engine part 2: `generatePlan` (Mifflin-St Jeor, ISSN macro floors, water loading / taper / light finish), Plan screen

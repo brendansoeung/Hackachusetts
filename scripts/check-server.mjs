@@ -10,10 +10,15 @@ for (const p of must200) {
 }
 for (const p of must404) {
   const r = await fetch(base + p);
-  if (r.status !== 404) { ok = false; console.log(`FAIL (should be blocked) ${p} -> ${r.status}`); }
+  // Any 4xx means blocked (Vercel answers some trick URLs with 400/403 instead of 404).
+  if (r.status < 400 || r.status >= 500) { ok = false; console.log(`FAIL (should be blocked) ${p} -> ${r.status}`); }
 }
 const coach = await fetch(base + '/api/coach', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: 'briefing', context: { status: 'green' } }) });
 console.log(`/api/coach -> ${coach.status} ${JSON.stringify(await coach.json())}`);
 const bad = await fetch(base + '/api/coach', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: 'briefing', context: { name: 'Sam' } }) });
 console.log(`/api/coach with a name -> ${bad.status}`);
+const home = await fetch(base + '/');
+for (const h of ['content-security-policy', 'x-content-type-options', 'referrer-policy']) {
+  console.log(`${h}: ${home.headers.get(h) ? 'present' : 'MISSING (expected on Vercel only)'}`);
+}
 console.log(ok ? 'ALL FILE CHECKS PASSED' : 'SOME CHECKS FAILED');

@@ -6,7 +6,7 @@ MakeWeight is a phone-first web app that helps wrestlers and combat athletes pla
 
 Hackachusetts 2026 · Healthcare & Biotech track · *Turning wearable data into better healthcare*
 
-**Live app:** _add your Vercel link here_ (add `?demo` to the end to open straight into the demo athlete)
+**Live app:** https://makeweight-six.vercel.app · **Try the demo athlete:** https://makeweight-six.vercel.app/?demo
 
 ![Today, Plan and Recovery screens with the demo athlete](docs/screens-1.png)
 ![Log, Safety and goal setup screens](docs/screens-2.png)
