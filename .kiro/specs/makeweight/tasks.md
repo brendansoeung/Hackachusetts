@@ -19,4 +19,5 @@
 - [x] 10.1 Install on a real phone (iPhone home-screen app checked; fixed tab bar on short pages and date field overlap)
 - [x] 10.2 Redesign: "minimal earth" theme (near-black, warm greys, tan accent, Barlow Condensed headings), WHOOP-style wearable row, grouped red flags, Plan phase bar, Recovery segmented switch; tabs remember scroll position and fade in
 - [ ] 11. (Stretch, only if 1 to 10 are done by 4 PM) Firebase Google sign-in + Firestore sync with per-user security rules
-- [ ] 12. Submission: README + "How Kiro was used", final deploy, demo video (3 min or less), submission form
+- [x] 12. Submission prep: README + "How Kiro was used", final deploy, demo video (https://www.youtube.com/watch?v=W-9khdYeGAQ)
+- [ ] 12.1 Submit the form by 7:30 PM (deadline 8:00 PM)
