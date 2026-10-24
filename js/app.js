@@ -432,6 +432,7 @@ function renderLog() {
   const existing = state.entries.find((e) => e.date === today) || {};
   const recent = [...state.entries].reverse().slice(0, 30);
   const v = (k) => ((existing[k] ?? '') === '' ? '' : esc(existing[k]));
+  const chart = weightChartSvg({ entries: state.entries, plan, today });
   return `
     <h1 id="h-log">Log</h1>
     <p class="small muted">Weigh in the morning, after using the bathroom, before eating or drinking.</p>
@@ -471,8 +472,8 @@ function renderLog() {
 
     <section class="sec">
       <h2>Weight trend</h2>
-      ${weightChartSvg({ entries: state.entries, plan, today })}
-      <div class="legend" aria-hidden="true"><span class="l-actual">Actual</span><span class="l-plan">Plan</span><span class="l-goal">Goal</span></div>
+      ${chart}
+      ${chart.includes('<svg') ? '<div class="legend" aria-hidden="true"><span class="l-actual">Actual</span><span class="l-plan">Plan</span><span class="l-goal">Goal</span></div>' : ''}
     </section>
 
     <section class="sec">

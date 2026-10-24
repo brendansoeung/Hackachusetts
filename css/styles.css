@@ -46,13 +46,17 @@
 }
 
 * { box-sizing: border-box; }
-html { -webkit-text-size-adjust: 100%; background: var(--bg); }
+html { -webkit-text-size-adjust: 100%; background: var(--bg); height: 100%; }
 body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
   font: 15px/1.5 var(--body);
   padding-bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom) + 20px);
+  /* iOS home-screen apps: on pages shorter than the screen, iOS sizes the fixed-position area
+     to "screen minus status bar", so the bottom tab bar floats up by the status-bar height.
+     Making every page at least full-screen tall keeps the tab bar flush with the bottom. */
+  min-height: calc(100% + env(safe-area-inset-top, 0px));
 }
 a { color: var(--tan); }
 a, button, label, summary, select, input { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
@@ -227,7 +231,7 @@ main { max-width: 620px; margin: 0 auto; padding: 4px 18px 0; outline: none; }
   min-height: 46px; padding: 10px 16px;
   font: 700 14px/1 var(--num); letter-spacing: 1.6px; text-transform: uppercase;
   color: var(--text); background: transparent; border: 1px solid var(--line-strong);
-  border-radius: 3px; cursor: pointer; text-decoration: none;
+  border-radius: 3px; cursor: pointer; text-decoration: none; margin: 0;
   transition: background-color 120ms, transform 80ms;
 }
 .btn:hover { background: var(--raised); }
@@ -251,10 +255,22 @@ input[type="number"], input[type="date"], input[type="text"], select, textarea {
   background: var(--raised); border: 1px solid var(--line); border-radius: 3px;
 }
 textarea { font: 15px/1.45 var(--body); min-height: 84px; resize: vertical; }
+/* iPhones give date fields a built-in minimum width (and center the text), which pushes
+   them out of their column. Let them shrink to fit and left-align like the other boxes. */
+input[type="date"] {
+  -webkit-appearance: none;
+  appearance: none;
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  text-align: left;
+}
+input[type="date"]::-webkit-date-and-time-value { text-align: left; margin: 0; min-height: 1.2em; }
 select { font-size: 16px; }
 input:focus, select:focus, textarea:focus { border-color: var(--tan); outline: none; }
 fieldset { border: 0; padding: 0; margin: 0 0 16px; min-width: 0; }
-.row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
+.row > * { min-width: 0; }
 .choices { border-top: 1px solid var(--line); }
 .choice {
   display: flex; gap: 12px; align-items: flex-start; padding: 12px 2px; margin: 0;
