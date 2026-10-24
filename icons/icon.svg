@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="MakeWeight">
-  <rect width="512" height="512" rx="112" fill="#0b1220"/>
-  <circle cx="256" cy="256" r="168" fill="none" stroke="#fbbf24" stroke-width="36"/>
-  <path d="M256 150V338M180 268l76 76 76-76" fill="none" stroke="#e8edf6" stroke-width="40" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect width="512" height="512" rx="112" fill="#0f0e0c"/>
+  <circle cx="256" cy="256" r="168" fill="none" stroke="#c19a6b" stroke-width="36"/>
+  <path d="M256 150V338M180 268l76 76 76-76" fill="none" stroke="#ece6dc" stroke-width="40" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>

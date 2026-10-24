@@ -4,7 +4,7 @@
 import { addDays, daysBetween, formatDate, isDateStr, todayStr } from './dates.js';
 import { round } from './limits.js';
 import { CUT_TYPES, STRATEGY_INFO, adjustDayForRedFlags, assessGoal, generatePlan, planDayFor } from './rules.js';
-import { evaluateAlerts } from './alerts.js';
+import { evaluateAlerts, sleepPerformanceOf } from './alerts.js';
 import { WINDOWS, buildRecoveryPlan } from './recovery.js';
 import { SOURCES, sourcesFor } from './sources.js';
 import { weightChartSvg } from './chart.js';
@@ -18,8 +18,11 @@ import { askCoach, buildCoachContext, rulesBriefing, shouldRefreshBriefing } fro
 const $ = (sel, root = document) => root.querySelector(sel);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const num = (v) => (v === '' || v === null || v === undefined ? undefined : Number(v));
+const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
 const lb = (v) => `${round(v, 1)} lb`;
 const liters = (ml) => `${(ml / 1000).toFixed(1)} L`;
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+const clamp01 = (x) => Math.max(0, Math.min(1, x));
 
 /** Formats AI text safely: escape everything, then allow **bold** only. */
 const formatAiText = (t) => esc(t).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
@@ -30,7 +33,6 @@ const STATUS = {
   red: { label: 'Not safe', detail: 'Not safe in this timeframe' },
 };
 const PHASE = { fat: 'Fat loss', water: 'Water cut', taper: 'Hold steady', weighin: 'Weigh-in' };
-const LEVEL = { red: 'Red flag', yellow: 'Caution', info: 'Note' };
 
 const VIEWS = ['today', 'plan', 'log', 'recovery', 'coach', 'learn', 'setup'];
 
@@ -41,6 +43,8 @@ let briefingLoading = false;
 let chatLoading = false;
 let recoveryInput = null;
 let toastTimer = null;
+let lastView = null;
+const scrollPositions = {};
 
 function sourcesHtml(keys) {
   const list = sourcesFor(keys);
@@ -110,20 +114,20 @@ function briefingHtml() {
   const b = state.briefing;
   const aiOff = !state.privacyAccepted;
   let body;
-  if (briefingLoading) body = '<p class="loading muted" aria-busy="true">Coach is reading your data</p>';
-  else if (b) body = `<p class="briefing-text">${formatAiText(b.text)}</p>${b.note ? `<p class="small muted">${esc(b.note)}</p>` : ''}`;
+  if (briefingLoading) body = '<p class="briefing-text loading muted" aria-busy="true">Coach is reading your data</p>';
+  else if (b) body = `<p class="briefing-text">${formatAiText(b.text)}</p>${b.note ? `<p class="fine">${esc(b.note)}</p>` : ''}`;
   else body = `<p class="briefing-text">${esc(rulesBriefing(derived.context))}</p>`;
   const badge = b?.source === 'ai' && !briefingLoading ? '<span class="badge badge-ai">AI coach</span>' : '<span class="badge">Rules-based</span>';
   return `
-    <div class="card-head"><h2>Coach briefing</h2>${badge}</div>
+    <div class="h-row"><h2 class="cap tan">Coach</h2>${badge}</div>
     <div data-slot="briefing-body" aria-live="polite">${body}</div>
-    <div class="btn-row">
+    <div class="linkrow">
       ${aiOff
         ? '<a class="btn btn-small" href="#coach">Turn on AI coach</a>'
         : `<button class="btn btn-small" type="button" data-action="refresh-briefing" ${briefingLoading ? 'disabled' : ''}>Refresh</button>`}
       <a class="btn btn-small" href="#coach">Ask a question</a>
     </div>
-    <p class="small muted">Not medical advice. MakeWeight's coach is not a doctor.</p>`;
+    <p class="fine">Not medical advice. MakeWeight's coach is not a doctor.</p>`;
 }
 
 function renderBriefingSlots() {
@@ -157,7 +161,7 @@ function renderChatLog() {
     (m) => `<div class="msg msg-${m.role}"><span class="msg-meta">${m.role === 'user' ? 'You' : 'Coach'}</span>${m.role === 'coach' ? formatAiText(m.text) : esc(m.text)}</div>`,
   );
   if (chatLoading) msgs.push('<div class="msg msg-coach"><span class="msg-meta">Coach</span><span class="loading">Thinking</span></div>');
-  if (!msgs.length) msgs.push('<p class="muted">Ask anything about your cut, food, fluids, sleep or recovery.</p>');
+  if (!msgs.length) msgs.push('<p class="muted small">Ask anything about your cut, food, fluids, sleep or recovery.</p>');
   el.innerHTML = msgs.join('');
   el.scrollTop = el.scrollHeight;
 }
@@ -169,199 +173,278 @@ function statusPill(status) {
   return s ? `<span class="pill pill-${status}">${esc(s.label)}<span class="visually-hidden">: ${esc(s.detail)}</span></span>` : '';
 }
 
-function alertsHtml(alerts, { limit = 99 } = {}) {
+/** Alerts grouped by level. Each one is a single line that opens to show the details. */
+function flagsHtml(alerts, { eased = false } = {}) {
   if (!alerts.length) return '';
-  return `<ul class="alerts" aria-label="Alerts">${alerts
-    .slice(0, limit)
-    .map((a) => `<li class="alert alert-${a.level}"><span class="level">${LEVEL[a.level]}</span><strong>${esc(a.title)}</strong><span>${esc(a.message)}</span></li>`)
-    .join('')}</ul>`;
+  const groups = [
+    ['red', (n) => `${plural(n, 'red flag')}${eased ? ' · Plan eased' : ''}`],
+    ['yellow', (n) => plural(n, 'caution')],
+    ['info', () => 'Notes'],
+  ];
+  const blocks = groups
+    .map(([level, heading]) => {
+      const list = alerts.filter((a) => a.level === level);
+      if (!list.length) return '';
+      return `<div class="flagblock lv-${level}">
+        <p class="cap">${esc(heading(list.length))}</p>
+        ${list.map((a) => `<details class="flag"><summary>${esc(a.title)}</summary><p>${esc(a.message)}</p></details>`).join('')}
+      </div>`;
+    })
+    .join('');
+  return `<section class="flags" aria-label="Alerts">${blocks}</section>`;
 }
 
 function waterLoadingWarningHtml() {
   return `
-  <div class="card warn-card" role="note" aria-labelledby="wl-h">
+  <section class="warn" role="note" aria-labelledby="wl-h">
     <h2 id="wl-h">Water loading: read this first</h2>
-    <ul>
+    <ul class="bullets">
       <li>Drinking this much water while cutting salt can drop your blood sodium too low (hyponatremia), which is dangerous. Keep salt normal on loading days and spread the water across the whole day.</li>
       <li>The research was done on adult athletes, not high schoolers. NFHS's sports medicine committee warns against intentional dehydration for high school wrestlers.</li>
       <li>Never go to zero fluids. Stop and get help if you feel dizzy, confused or faint.</li>
       <li><strong>MakeWeight and its AI coach are not medical professionals.</strong> Talk to your athletic trainer or doctor before water loading.</li>
     </ul>
     ${sourcesHtml(['reale', 'issn', 'nfhs', 'nata'])}
-  </div>`;
+  </section>`;
 }
 
-function fluidsText(day) {
-  if (!Number.isFinite(day.fluidsMl)) return esc(day.fluidNote || '');
-  return `${day.fluidsOz} oz <small>(${liters(day.fluidsMl)})</small>`;
+function fluidsShort(day) {
+  return isNum(day.fluidsOz) ? `${day.fluidsOz} oz` : '';
+}
+
+const isCutBackDay = (day) => day.notes.some((x) => x.startsWith('Cut-back day'));
+
+function fluidLabel(day) {
+  if (day.waterLoading) return 'water loading';
+  if (isCutBackDay(day)) return 'cut-back day';
+  return '';
 }
 
 function targetsHtml(day) {
   if (day.phase === 'weighin') {
     return `
-      <div class="card">
-        <div class="card-head"><h2>Today: weigh-in</h2><span class="chip chip-weighin">Weigh-in</span></div>
-        <p>Target: <strong>${lb(day.targetWeightLb)}</strong>. Small sips only until you step on the scale.</p>
+      <section class="sec">
+        <div class="h-row"><h2>Today: weigh-in</h2><span class="chip chip-weighin">Weigh-in</span></div>
+        <p class="small muted">Target ${lb(day.targetWeightLb)}. Small sips only until you step on the scale.</p>
         <a class="btn btn-primary btn-block" href="#recovery">Open my recovery plan</a>
-      </div>`;
+      </section>`;
   }
   const n = day.nutrition;
+  const fl = fluidLabel(day);
   return `
-    <div class="card">
-      <div class="card-head"><h2>Today's targets</h2><span class="chip chip-${day.phase}">${PHASE[day.phase]}</span></div>
-      ${day.adjusted ? `<div class="alert alert-red" role="note"><span class="level">Plan eased</span><strong>Your wearable flagged poor recovery</strong><ul>${day.adjustments.map((a) => `<li>${esc(a)}</li>`).join('')}</ul></div>` : ''}
-      <dl class="stats">
-        <div class="stat"><dt>Morning weight target</dt><dd>${lb(day.targetWeightLb)}</dd></div>
-        <div class="stat"><dt>Fluids</dt><dd>${fluidsText(day)}</dd></div>
-        <div class="stat"><dt>Food</dt><dd>${n.calories} kcal</dd></div>
-        <div class="stat"><dt>Protein · Carbs · Fat</dt><dd>${n.proteinG} · ${n.carbsG} · ${n.fatG} <small>g</small></dd></div>
-        <div class="stat"><dt>Salt</dt><dd>${day.sodium === 'lower' ? 'Lower' : 'Normal'}</dd></div>
-        <div class="stat"><dt>Fiber</dt><dd>${day.fiber === 'low' ? 'Under 10 g' : 'Normal'}</dd></div>
-        <div class="stat stat-wide"><dt>Cardio</dt><dd><small>${esc(day.cardio)}</small></dd></div>
-      </dl>
-      ${day.notes.length ? `<ul class="small">${day.notes.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
-      ${day.fluidNote ? `<p class="small muted">${esc(day.fluidNote)}</p>` : ''}
+    <section class="sec">
+      <div class="h-row"><h2>Today's targets</h2><span class="chip chip-${day.phase}">${PHASE[day.phase]}</span></div>
+      <div class="rows">
+        <div class="r"><span class="k">Morning target</span><span class="v">${lb(day.targetWeightLb)}</span></div>
+        <div class="r"><span class="k">Fluids${fl ? ` <small>${fl}</small>` : ''}</span><span class="v">${fluidsShort(day)} <small class="muted">${liters(day.fluidsMl)}</small></span></div>
+        <div class="r"><span class="k">Food <small>${n.proteinG} P · ${n.carbsG} C · ${n.fatG} F</small></span><span class="v">${n.calories.toLocaleString('en-US')} kcal</span></div>
+        <div class="r"><span class="k">Salt</span><span class="v">${day.sodium === 'lower' ? 'Lower' : 'Normal'}</span></div>
+        <div class="r"><span class="k">Fiber</span><span class="v">${day.fiber === 'low' ? 'Under 10 g' : 'Normal'}</span></div>
+        <div class="r stack"><span class="k">Cardio</span><span class="v">${esc(day.cardio)}</span></div>
+      </div>
+      ${day.adjusted ? `<div class="flagblock lv-red mt"><p class="cap">Eased today because of your wearable</p><ul class="bullets">${day.adjustments.map((a) => `<li>${esc(a)}</li>`).join('')}</ul></div>` : ''}
+      ${day.notes.length ? `<ul class="bullets mt">${day.notes.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
+      ${day.fluidNote ? `<p class="fine">${esc(day.fluidNote)}</p>` : ''}
       ${sourcesHtml(day.sources)}
-    </div>
+    </section>
     ${day.waterLoading ? waterLoadingWarningHtml() : ''}`;
+}
+
+/** WHOOP-style row: recovery, resting HR, sleep, HRV from the latest entry. */
+function metricsHtml(latest, alertsResult) {
+  if (!latest) return '';
+  const ids = new Set(alertsResult.alerts.map((a) => a.id));
+  const sleep = sleepPerformanceOf(latest);
+  const delta = alertsResult.metrics.restingHrDelta;
+  const cell = (value, label, red) =>
+    `<div class="metric"><b class="${value === '—' ? 'none' : red ? 'rust' : ''}">${value}</b><span class="cap">${label}</span></div>`;
+  const has = [latest.recoveryScore, latest.restingHr, sleep.value, latest.hrv].some(isNum);
+  if (!has) return '';
+  return `<div class="metrics" aria-label="Latest wearable numbers">
+    ${cell(isNum(latest.recoveryScore) ? `${Math.round(latest.recoveryScore)}%` : '—', 'Recovery', ids.has('recovery_low'))}
+    ${cell(isNum(latest.restingHr) ? Math.round(latest.restingHr) : '—', isNum(delta) && delta > 0 ? `RHR +${Math.round(delta)}` : 'RHR', ids.has('rhr_high'))}
+    ${cell(isNum(sleep.value) ? `${sleep.value}%` : '—', sleep.estimated ? 'Sleep est.' : 'Sleep', ids.has('sleep_low'))}
+    ${cell(isNum(latest.hrv) ? Math.round(latest.hrv) : '—', 'HRV ms', false)}
+  </div>`;
+}
+
+function installHtml() {
+  return `
+    <section class="sec">
+      <h2>Put MakeWeight on your phone</h2>
+      <div class="rows">
+        <div class="r stack"><span class="k">iPhone (Safari)</span><span class="v">Tap Share, then "Add to Home Screen".</span></div>
+        <div class="r stack"><span class="k">Android (Chrome)</span><span class="v">Tap the menu (three dots), then "Install app" or "Add to Home screen".</span></div>
+      </div>
+      <p class="fine">It opens full-screen like an app, and your plan works offline.</p>
+    </section>`;
 }
 
 // ---------- views ----------
 
 function welcomeHtml() {
   return `
-    <div class="card hero">
+    <div class="welcome">
       <h1 id="h-today">Make weight. Stay strong.</h1>
-      <p>MakeWeight plans a safe weight cut, watches your wearable data for warning signs, and tells you exactly how to refuel after weigh-ins.</p>
+      <p class="lead">A safe weight-cut plan, red flags from your wearable, and exactly how to refuel after weigh-ins.</p>
       <div class="btn-row">
         <a class="btn btn-primary" href="#setup">Set up my cut</a>
         <button class="btn" type="button" data-action="load-demo">Try the demo athlete</button>
       </div>
     </div>
-    <div class="card">
+    <section class="sec">
       <h2>How it keeps you safe</h2>
-      <ul>
-        <li>Fat loss capped near 1% of body weight a week.</li>
-        <li>Water cut capped at 5%, final days only.</li>
-        <li>Red flags from low recovery, a high resting heart rate or bad sleep slow your plan down.</li>
-        <li>Never suggests saunas, rubber suits, vomiting, diuretics or laxatives. <a href="#learn">See why</a>.</li>
-      </ul>
-      <p class="small muted">Your data stays on this device. No account, no coach view.</p>
-    </div>
-    ${installCardHtml()}`;
+      <div class="rows">
+        <div class="r"><span class="k">Fat loss</span><span class="v">~1% / week</span></div>
+        <div class="r"><span class="k">Water cut, final days only</span><span class="v">5% max</span></div>
+        <div class="r stack"><span class="k">Wearable red flags</span><span class="v">Low recovery, a high resting heart rate or bad sleep slow your plan down.</span></div>
+        <div class="r stack"><span class="k">Never suggested</span><span class="v">Saunas, rubber suits, vomiting, diuretics or laxatives. <a href="#learn">See why</a>.</span></div>
+      </div>
+      <p class="fine">Your data stays on this device. No account, no coach view.</p>
+    </section>
+    ${installHtml()}`;
 }
 
 function renderToday() {
   if (!state.goal) return welcomeHtml();
   const { plan, rawPlan, alertsResult, todayPlan, today } = derived;
   if (!plan) {
-    return `<h1 id="h-today">Today</h1><div class="card danger-card"><h2>Your goal needs fixing</h2><p>${esc((rawPlan?.assessment?.errors || []).join(' '))}</p><a class="btn btn-primary" href="#setup">Edit goal</a></div>`;
+    return `<h1 id="h-today">Today</h1><div class="flagblock lv-red"><p class="cap">Your goal needs fixing</p><p class="plain">${esc((rawPlan?.assessment?.errors || []).join(' '))}</p></div><a class="btn btn-primary btn-block" href="#setup">Edit goal</a>`;
   }
   const a = plan.assessment;
   const daysLeft = daysBetween(today, plan.weighInDate);
   const dayNum = daysBetween(plan.startDate, today) + 1;
+  const totalDays = plan.daysOut + 1;
   let when;
-  if (daysLeft < 0) when = `Weigh-in was ${formatDate(plan.weighInDate)}.`;
-  else if (dayNum < 1) when = `Plan starts ${formatDate(plan.startDate)}.`;
-  else when = daysLeft === 0 ? 'Weigh-in is today.' : `Day ${dayNum} · ${daysLeft} day${daysLeft === 1 ? '' : 's'} to weigh-in`;
+  if (daysLeft < 0) when = `Weigh-in was ${formatDate(plan.weighInDate)}`;
+  else if (dayNum < 1) when = `Starts ${formatDate(plan.startDate)}`;
+  else when = `Day ${dayNum} of ${totalDays}`;
+
   const latest = alertsResult.latest;
+  const current = latest?.weightLb ?? plan.startWeightLb;
+  const toGo = Math.max(0, current - a.targetLb);
+  const span = plan.startWeightLb - a.targetLb;
+  const fillPct = clamp01((plan.startWeightLb - current) / span) * 100;
+  const expected = todayPlan ? clamp01((plan.startWeightLb - todayPlan.targetWeightLb) / span) * 100 : null;
+
+  let statusText = 'Within safe limits.';
+  if (a.status === 'yellow') statusText = `Faster than 1% a week. Safer goal: ${lb(a.safestWeightLb)}.`;
+  else if (a.status === 'red') statusText = `Not safe in this timeframe. Plan capped at ${lb(plan.planTargetLb)}.`;
 
   let todayBlock;
   if (todayPlan) todayBlock = targetsHtml(todayPlan);
-  else if (daysLeft < 0) todayBlock = '<div class="card"><h2>Cut complete</h2><p>Nice work. Set up your next goal when you are ready.</p><a class="btn btn-primary" href="#setup">New goal</a></div>';
-  else todayBlock = `<div class="card"><p>Your plan starts ${formatDate(plan.startDate)}.</p></div>`;
+  else if (daysLeft < 0) todayBlock = '<section class="sec"><h2>Cut complete</h2><p class="small muted">Nice work. Set up your next goal when you are ready.</p><a class="btn btn-primary btn-block" href="#setup">New goal</a></section>';
+  else todayBlock = `<section class="sec"><p class="small muted">Your plan starts ${formatDate(plan.startDate)}.</p></section>`;
 
   return `
-    <h1 id="h-today">Today</h1>
-    <div class="card">
-      <div class="card-head"><h2>${esc(CUT_TYPES[plan.cutType].label)}</h2>${statusPill(a.status)}</div>
-      <p class="muted">${esc(when)}</p>
-      <dl class="stats">
-        <div class="stat"><dt>Now</dt><dd>${latest ? lb(latest.weightLb) : '<small>Log today</small>'}</dd></div>
-        <div class="stat"><dt>Goal</dt><dd>${lb(a.targetLb)}${a.status === 'red' ? `<br><small>Safe cap: ${lb(plan.planTargetLb)}</small>` : ''}</dd></div>
-      </dl>
-    </div>
-    <div class="card" data-slot="briefing">${briefingHtml()}</div>
-    ${alertsHtml(alertsResult.alerts)}
+    <h1 id="h-today" class="visually-hidden">Today</h1>
+    <section class="hero-t" aria-label="Where you stand">
+      <p class="cap">${esc(CUT_TYPES[plan.cutType].label)} · ${esc(when)}</p>
+      <div class="hero-row">
+        <div class="big">${round(current, 1)}<small>lb</small></div>
+        <div class="days-left"><b>${Math.max(0, daysLeft)}</b><span class="cap">${daysLeft === 0 ? 'Weigh-in today' : daysLeft === 1 ? 'Day to weigh-in' : 'Days to weigh-in'}</span></div>
+      </div>
+      <div class="track" role="img" aria-label="${esc(`${round(plan.startWeightLb - current, 1)} of ${round(span, 1)} lb lost${expected !== null ? '; the line marks where the plan expects you today' : ''}`)}">
+        <span class="fill" style="width:${fillPct.toFixed(1)}%"></span>
+        ${expected !== null ? `<span class="tick" style="left:${expected.toFixed(1)}%"></span>` : ''}
+      </div>
+      <div class="trackcap"><span class="cap">${round(plan.startWeightLb, 1)} start</span><span class="cap">Goal ${round(a.targetLb, 1)} · ${round(toGo, 1)} to go</span></div>
+      <p class="status-line">${statusPill(a.status)}${esc(statusText)}</p>
+    </section>
+    ${metricsHtml(latest, alertsResult)}
+    ${flagsHtml(alertsResult.alerts, { eased: Boolean(todayPlan?.adjusted) })}
+    <section class="coachbox" data-slot="briefing">${briefingHtml()}</section>
     ${todayBlock}
     <a class="btn btn-primary btn-block" href="#log">Log today's numbers</a>`;
 }
 
+function phaseBarHtml(plan, today) {
+  const segs = [];
+  if (plan.fatDays > 0) segs.push(`<div class="ph-fat" style="flex:${plan.fatDays}">Fat loss · ${plural(plan.fatDays, 'day')}</div>`);
+  if (plan.waterDays > 0) {
+    const cls = plan.strategy === 'none' ? 'ph-hold' : 'ph-water';
+    const name = plan.strategy === 'none' ? 'Hold' : 'Water';
+    segs.push(`<div class="${cls}" style="flex:${plan.waterDays}">${name} · ${plan.waterDays}</div>`);
+  }
+  segs.push('<div class="ph-weigh" style="flex:1.3">Weigh</div>');
+  const totalFlex = plan.fatDays + plan.waterDays + 1.3;
+  const idx = daysBetween(plan.startDate, today);
+  let mark = '';
+  if (idx >= 0 && idx <= plan.daysOut) {
+    const left = idx === plan.daysOut ? (plan.daysOut + 0.65) / totalFlex : (idx + 0.5) / totalFlex;
+    mark = `<div class="todaymark" aria-hidden="true"><span style="left:${(left * 100).toFixed(1)}%">Today</span></div>`;
+  }
+  return `<div class="phases" role="img" aria-label="${esc(`${plural(plan.fatDays, 'day')} of fat loss, ${plural(plan.waterDays, 'day')} of ${plan.strategy === 'none' ? 'holding steady' : 'water cut'}, then weigh-in`)}">${segs.join('')}</div>${mark}`;
+}
+
 function renderPlan() {
   if (!state.goal) {
-    return `<h1 id="h-plan">Plan</h1><div class="card"><p>No plan yet.</p><div class="btn-row"><a class="btn btn-primary" href="#setup">Set up my cut</a><button class="btn" type="button" data-action="load-demo">Try the demo</button></div></div>`;
+    return `<h1 id="h-plan">Plan</h1><p class="small muted">No plan yet.</p><div class="btn-row"><a class="btn btn-primary" href="#setup">Set up my cut</a><button class="btn" type="button" data-action="load-demo">Try the demo</button></div>`;
   }
   const { plan, rawPlan, today } = derived;
-  if (!plan) return `<h1 id="h-plan">Plan</h1><div class="card danger-card"><p>${esc((rawPlan?.assessment?.errors || []).join(' '))}</p><a class="btn btn-primary" href="#setup">Edit goal</a></div>`;
+  if (!plan) return `<h1 id="h-plan">Plan</h1><div class="flagblock lv-red"><p class="plain">${esc((rawPlan?.assessment?.errors || []).join(' '))}</p></div><a class="btn btn-primary btn-block" href="#setup">Edit goal</a>`;
   const a = plan.assessment;
   const ct = CUT_TYPES[plan.cutType];
   const days = plan.days
     .map((d) => {
       const isToday = d.date === today;
       const n = d.nutrition;
+      const kind = d.waterLoading ? 'Water loading' : isCutBackDay(d) ? 'Cut-back day' : PHASE[d.phase];
+      const meta = n
+        ? [kind, fluidsShort(d), `${n.calories.toLocaleString('en-US')} kcal`, d.fiber === 'low' ? 'low fiber' : ''].filter(Boolean).join(' · ')
+        : `${kind} · then open Recovery`;
       return `<li class="day" ${isToday ? 'aria-current="date"' : ''}>
-        <div class="day-head">
-          <strong>${isToday ? '<span class="chip chip-today">Today</span>' : ''}${esc(formatDate(d.date))}</strong>
-          <span class="day-weight">${lb(d.targetWeightLb)}</span>
-        </div>
-        <p><span class="chip chip-${d.phase}">${PHASE[d.phase]}</span>${d.waterLoading ? '<span class="chip chip-water">Water loading</span>' : ''}</p>
-        ${n ? `<p>${n.calories} kcal · ${n.proteinG} g protein · ${n.carbsG} g carbs · ${fluidsText(d)} fluids</p>` : `<p>${esc(d.fluidNote)}</p>`}
-        <p class="muted">${esc(d.cardio)}</p>
-        ${d.notes.length ? `<ul>${d.notes.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
+        <div class="day-head"><span class="day-date">${esc(formatDate(d.date))}</span><span class="day-weight">${round(d.targetWeightLb, 1).toFixed(1)}</span></div>
+        <p class="day-meta">${esc(meta)}</p>
+        <details><summary>Details</summary>
+          ${n ? `<p>${n.proteinG} g protein · ${n.carbsG} g carbs · ${n.fatG} g fat · ${liters(d.fluidsMl)} fluids</p>` : `<p>${esc(d.fluidNote)}</p>`}
+          <p>${esc(d.cardio)}</p>
+          ${d.notes.length ? `<ul class="bullets">${d.notes.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
+        </details>
       </li>`;
     })
     .join('');
 
   return `
     <h1 id="h-plan">Your plan</h1>
-    <div class="card">
-      <div class="card-head"><h2>${esc(ct.label)} <span class="muted small">(${esc(ct.range)})</span></h2>${statusPill(a.status)}</div>
-      <p>${esc(ct.focus)}</p>
-      <p><strong>${esc(a.reason)}</strong></p>
-      <dl class="stats">
-        <div class="stat"><dt>Start</dt><dd>${lb(plan.startWeightLb)}<br><small>${esc(formatDate(plan.startDate))}</small></dd></div>
-        <div class="stat"><dt>Goal</dt><dd>${lb(a.targetLb)}<br><small>Weigh-in ${esc(formatDate(plan.weighInDate))}</small></dd></div>
-        <div class="stat"><dt>From fat</dt><dd>${lb(plan.fatLossLb)}</dd></div>
-        <div class="stat"><dt>From water</dt><dd>${lb(plan.waterLossLb)} <small>(${round(plan.waterLossPct)}%)</small></dd></div>
-        <div class="stat stat-wide"><dt>Final days</dt><dd><small>${esc(STRATEGY_INFO[plan.strategy])}</small></dd></div>
-      </dl>
-      <div class="btn-row"><a class="btn" href="#setup">Edit goal</a></div>
-      ${sourcesHtml(['mw', 'issn', 'reale'])}
+    <p class="cap">${round(plan.startWeightLb, 1)} → ${round(a.targetLb, 1)} lb · ${esc(formatDate(plan.startDate))} → ${esc(formatDate(plan.weighInDate))}</p>
+    ${phaseBarHtml(plan, today)}
+    <section class="panel verdict">
+      <div class="h-row m0"><span class="cap">${esc(ct.label)} · ${esc(ct.range)}</span>${statusPill(a.status)}</div>
+      <p>${esc(a.reason)}</p>
+    </section>
+    <div class="split">
+      <div><span class="cap">From fat</span><b>${lb(plan.fatLossLb)}</b></div>
+      <div><span class="cap">From water</span><b>${lb(plan.waterLossLb)} <small>${round(plan.waterLossPct)}%</small></b></div>
     </div>
+    <p class="small muted mt">${esc(ct.focus)} ${esc(STRATEGY_INFO[plan.strategy])}</p>
+    <div class="btn-row"><a class="btn btn-small" href="#setup">Edit goal</a></div>
+    ${sourcesHtml(['mw', 'issn', 'reale'])}
     ${plan.warnings.includes('water_loading') ? waterLoadingWarningHtml() : ''}
-    <h2>Day by day</h2>
-    <ol class="days" aria-label="Day-by-day plan">${days}</ol>`;
-}
-
-function installCardHtml() {
-  return `
-    <div class="card">
-      <h2>Put MakeWeight on your phone</h2>
-      <ul>
-        <li><strong>iPhone (Safari):</strong> tap Share, then "Add to Home Screen".</li>
-        <li><strong>Android (Chrome):</strong> tap the menu (three dots), then "Install app" or "Add to Home screen".</li>
-      </ul>
-      <p class="small muted">It opens full-screen like an app, and your plan works offline.</p>
-    </div>`;
+    <section class="sec">
+      <h2>Day by day</h2>
+      <ol class="days" aria-label="Day-by-day plan">${days}</ol>
+    </section>`;
 }
 
 function renderLog() {
   const { today, plan } = derived;
   const existing = state.entries.find((e) => e.date === today) || {};
   const recent = [...state.entries].reverse().slice(0, 30);
-  const v = (k) => (existing[k] ?? '') === '' ? '' : esc(existing[k]);
+  const v = (k) => ((existing[k] ?? '') === '' ? '' : esc(existing[k]));
   return `
     <h1 id="h-log">Log</h1>
-    <form class="card" id="log-form" novalidate>
-      <h2>Daily check-in</h2>
-      <p class="small muted">Weigh in the morning, after using the bathroom, before eating or drinking.</p>
-      <div class="field">
-        <label for="log-date">Date</label>
-        <input id="log-date" name="date" type="date" value="${esc(today)}" max="${esc(addDays(today, 0))}" required>
-      </div>
-      <div class="field">
-        <label for="log-weight">Weight (lb)</label>
-        <input id="log-weight" name="weightLb" type="number" inputmode="decimal" step="0.1" min="60" max="450" value="${v('weightLb')}" required>
+    <p class="small muted">Weigh in the morning, after using the bathroom, before eating or drinking.</p>
+    <form id="log-form" novalidate>
+      <div class="row">
+        <div class="field">
+          <label for="log-date">Date</label>
+          <input id="log-date" name="date" type="date" value="${esc(today)}" max="${esc(addDays(today, 0))}" required>
+        </div>
+        <div class="field">
+          <label for="log-weight">Weight (lb)</label>
+          <input id="log-weight" name="weightLb" type="number" inputmode="decimal" step="0.1" min="60" max="450" value="${v('weightLb')}" required>
+        </div>
       </div>
       <div class="row">
         <div class="field">
@@ -373,9 +456,9 @@ function renderLog() {
           <input id="log-rhr" name="restingHr" type="number" inputmode="numeric" min="25" max="150" value="${v('restingHr')}">
         </div>
       </div>
-      <details>
-        <summary>Wearable numbers (optional)</summary>
-        <p class="small muted">From WHOOP, Garmin, Apple Watch or similar.</p>
+      <details class="more">
+        <summary>+ Wearable numbers (optional)</summary>
+        <p class="fine m0">From WHOOP, Garmin, Apple Watch or similar.</p>
         <div class="row">
           <div class="field"><label for="log-rec">Recovery (%)</label><input id="log-rec" name="recoveryScore" type="number" inputmode="numeric" min="0" max="100" value="${v('recoveryScore')}"></div>
           <div class="field"><label for="log-hrv">HRV (ms)</label><input id="log-hrv" name="hrv" type="number" inputmode="decimal" min="5" max="300" value="${v('hrv')}"></div>
@@ -386,44 +469,42 @@ function renderLog() {
       <button class="btn btn-primary btn-block" type="submit">Save</button>
     </form>
 
-    <div class="card">
+    <section class="sec">
       <h2>Weight trend</h2>
       ${weightChartSvg({ entries: state.entries, plan, today })}
       <div class="legend" aria-hidden="true"><span class="l-actual">Actual</span><span class="l-plan">Plan</span><span class="l-goal">Goal</span></div>
-    </div>
+    </section>
 
-    <div class="card">
+    <section class="sec">
       <h2>History</h2>
       ${recent.length ? `<ul class="entries">${recent.map((e) => `
         <li>
           <div>
-            <strong>${esc(formatDate(e.date))}: ${lb(e.weightLb)}</strong>
+            <div class="entry-main">${esc(formatDate(e.date))} · <span class="num">${lb(e.weightLb)}</span></div>
             <div class="entry-meta">${[
               e.source === 'wearable' ? 'Wearable' : 'Manual',
-              Number.isFinite(e.recoveryScore) ? `Recovery ${e.recoveryScore}%` : '',
-              Number.isFinite(e.restingHr) ? `RHR ${e.restingHr}` : '',
-              Number.isFinite(e.hrv) ? `HRV ${e.hrv}` : '',
-              Number.isFinite(e.sleepHours) ? `Sleep ${e.sleepHours} h` : '',
+              isNum(e.recoveryScore) ? `Recovery ${e.recoveryScore}%` : '',
+              isNum(e.restingHr) ? `RHR ${e.restingHr}` : '',
+              isNum(e.hrv) ? `HRV ${e.hrv}` : '',
+              isNum(e.sleepHours) ? `Sleep ${e.sleepHours} h` : '',
             ].filter(Boolean).map(esc).join(' · ')}</div>
           </div>
           <button class="btn btn-small btn-danger" type="button" data-action="delete-entry" data-date="${esc(e.date)}" aria-label="Delete entry for ${esc(formatDate(e.date))}">Delete</button>
-        </li>`).join('')}</ul>` : '<p class="muted">No entries yet.</p>'}
-    </div>
+        </li>`).join('')}</ul>` : '<p class="small muted">No entries yet.</p>'}
+    </section>
 
-    <div class="card">
+    <section class="sec">
       <h2>Your data</h2>
       <p class="small muted">Everything is saved only on this device. Clearing your browser data erases it, so export a backup now and then.</p>
       <div class="btn-row">
-        <button class="btn" type="button" data-action="export">Export backup</button>
-        <label class="btn" for="import-file">Import backup</label>
+        <button class="btn btn-small" type="button" data-action="export">Export backup</button>
+        <label class="btn btn-small" for="import-file">Import backup</label>
         <input id="import-file" class="visually-hidden" type="file" accept="application/json,.json">
+        <button class="btn btn-small" type="button" data-action="load-demo">Load demo athlete</button>
+        <button class="btn btn-small btn-danger" type="button" data-action="erase">Erase all data</button>
       </div>
-      <div class="btn-row">
-        <button class="btn" type="button" data-action="load-demo">Load demo athlete</button>
-        <button class="btn btn-danger" type="button" data-action="erase">Erase all data</button>
-      </div>
-    </div>
-    ${installCardHtml()}`;
+    </section>
+    ${installHtml()}`;
 }
 
 function defaultRecoveryInput() {
@@ -439,7 +520,7 @@ function defaultRecoveryInput() {
 
 function recoveryResultHtml(input) {
   if (input.weightLb === '' || input.weightLb === null || input.weightLb === undefined) {
-    return '<p class="muted">Enter your weigh-in weight to see your plan.</p>';
+    return '<p class="small muted">Enter your weigh-in weight to see your plan.</p>';
   }
   const p = buildRecoveryPlan({
     window: input.window,
@@ -449,47 +530,48 @@ function recoveryResultHtml(input) {
     heavyDepletion: input.heavyDepletion === 'auto' ? undefined : input.heavyDepletion === 'yes',
   });
   if (p.errors) return `<p class="form-errors" role="alert">${esc(p.errors.join(' '))}</p>`;
-  const foods = (opts) => `<ul class="foods">${opts.map((o, i) => `<li>${opts.length > 1 ? `<strong>Option ${i + 1}:</strong> ` : ''}${esc(o.items.join(' + '))} <span class="grams">(about ${o.carbsG} g carbs)</span></li>`).join('')}</ul>`;
+  const foods = (opts) => `<ul class="foods">${opts.map((o, i) => `<li>${opts.length > 1 ? `<strong>Option ${i + 1}:</strong> ` : ''}${esc(o.items.join(' + '))} <span class="grams">about ${o.carbsG} g carbs</span></li>`).join('')}</ul>`;
   return `
-    <div class="card">
-      <div class="card-head"><h2>${esc(p.label)}: your plan</h2></div>
-      <p class="muted">Total fluids: about ${p.fluidTotal.oz} oz (${liters(p.fluidTotal.ml)}) after cutting ${lb(p.cutLb)}${p.cutPct ? ` (${p.cutPct}%)` : ''}.</p>
-      ${p.warnings.length ? `<ul class="alerts">${p.warnings.map((w) => `<li class="alert alert-yellow"><span class="level">Caution</span>${esc(w)}</li>`).join('')}</ul>` : ''}
-      <ol class="timeline">${p.steps.map((s) => `
-        <li>
-          <span class="time">${esc(s.time)}</span>
+    <section class="sec">
+      <h2>${esc(p.label)}: your plan</h2>
+      <p class="small muted mt-s">Total fluids about ${p.fluidTotal.oz} oz (${liters(p.fluidTotal.ml)}) after cutting ${lb(p.cutLb)}${p.cutPct ? ` (${p.cutPct}%)` : ''}.</p>
+      ${p.warnings.length ? `<div class="flagblock lv-yellow mt"><p class="cap">${plural(p.warnings.length, 'caution')}</p>${p.warnings.map((w) => `<p class="plain">${esc(w)}</p>`).join('')}</div>` : ''}
+      <ol class="tl">${p.steps.map((s) => `
+        <li class="st">
+          <p class="cap">${esc(s.time)}</p>
           <h3>${esc(s.title)}</h3>
           <p>${esc(s.detail)}</p>
           ${s.foods ? foods(s.foods) : ''}
           ${sourcesHtml(s.sources)}
         </li>`).join('')}</ol>
-    </div>
+    </section>
     ${p.betweenMatches.length ? `
-    <div class="card">
+    <section class="sec">
       <h2>Between matches</h2>
-      <ol class="timeline">${p.betweenMatches.map((s) => `<li><span class="time">${esc(s.when)}</span><p>${esc(s.what)}</p>${s.foods ? foods(s.foods) : ''}</li>`).join('')}</ol>
+      <ol class="tl">${p.betweenMatches.map((s) => `<li class="st"><p class="cap">${esc(s.when)}</p><p>${esc(s.what)}</p>${s.foods ? foods(s.foods) : ''}</li>`).join('')}</ol>
       ${sourcesHtml(['issn', 'mw'])}
-    </div>` : ''}
-    <p class="small muted">Feeling dizzy, confused or faint after weigh-in? Stop and tell your athletic trainer or call 911.</p>`;
+    </section>` : ''}
+    <p class="fine">Feeling dizzy, confused or faint after weigh-in? Stop and tell your athletic trainer or call 911.</p>`;
 }
+
+const WINDOW_SHORT = { under1h: '< 1 hr', '1to6h': '1–6 hr', '12plus': '12+ hr' };
 
 function renderRecovery() {
   if (!recoveryInput) recoveryInput = defaultRecoveryInput();
   const r = recoveryInput;
   return `
     <h1 id="h-recovery">After weigh-in</h1>
-    <form class="card" id="recovery-form" novalidate>
+    <form id="recovery-form" novalidate>
       <fieldset>
         <legend>How long until you compete?</legend>
-        <div class="choices">
-          ${Object.entries(WINDOWS).map(([k, w]) => `
-            <label class="choice"><input type="radio" name="window" value="${k}" ${r.window === k ? 'checked' : ''}>
-              <span>${esc(w.label)}<span class="hint">${esc(w.hint)}</span></span></label>`).join('')}
+        <div class="seg">
+          ${Object.keys(WINDOWS).map((k) => `<label><input type="radio" name="window" value="${k}" ${r.window === k ? 'checked' : ''} aria-label="${esc(WINDOWS[k].label)}">${esc(WINDOW_SHORT[k])}</label>`).join('')}
         </div>
+        <p class="seg-hint">${esc(WINDOWS[r.window]?.label || '')}: ${esc(WINDOWS[r.window]?.hint || '')}</p>
       </fieldset>
       <div class="row">
         <div class="field"><label for="rec-weight">Weigh-in weight (lb)</label><input id="rec-weight" name="weightLb" type="number" inputmode="decimal" step="0.1" min="60" max="450" value="${esc(r.weightLb)}"></div>
-        <div class="field"><label for="rec-cut">Pounds cut in the final days</label><input id="rec-cut" name="cutLb" type="number" inputmode="decimal" step="0.1" min="0" max="40" value="${esc(r.cutLb)}"></div>
+        <div class="field"><label for="rec-cut">Lb cut, final days</label><input id="rec-cut" name="cutLb" type="number" inputmode="decimal" step="0.1" min="0" max="40" value="${esc(r.cutLb)}"></div>
       </div>
       <div class="field"><label class="check"><input type="checkbox" name="tournament" ${r.tournament ? 'checked' : ''}> Tournament (more than one match)</label></div>
       ${r.window === '12plus' ? `
@@ -509,24 +591,24 @@ function renderCoach() {
   if (!state.privacyAccepted) {
     return `
       <h1 id="h-coach">AI coach</h1>
-      <div class="card">
-        <h2>Before you turn on the AI coach</h2>
-        <ul>
+      <section class="sec">
+        <h2>Before you turn it on</h2>
+        <ul class="bullets mt-s">
           <li>The coach runs on Google Gemini's free tier. Google may use what's sent to improve its products.</li>
           <li>MakeWeight sends <strong>numbers only</strong>: your weights, sleep, heart rate and plan targets, plus your question. Never your name or profile.</li>
           <li>Don't type names, your school or other personal details into the chat.</li>
           <li>The coach explains your plan; it can't change the safety limits. It is <strong>not a doctor</strong>.</li>
         </ul>
-        <div class="btn-row"><button class="btn btn-primary" type="button" data-action="accept-privacy">Turn on AI coach</button></div>
-        <p class="small muted">Without the AI, you still get a rules-based briefing on the Today tab.</p>
-      </div>`;
+        <button class="btn btn-primary btn-block" type="button" data-action="accept-privacy">Turn on AI coach</button>
+        <p class="fine">Without the AI, you still get a rules-based briefing on the Today tab.</p>
+      </section>`;
   }
   const suggestions = ['What should I eat tonight?', 'My recovery is red. Should I still run?', 'Should I take a salt bath?', 'How do I water load safely?'];
   return `
     <h1 id="h-coach">AI coach</h1>
-    ${state.goal ? `<div class="card" data-slot="briefing">${briefingHtml()}</div>` : '<div class="card"><p>Set up your cut first so the coach knows your plan.</p><a class="btn btn-primary" href="#setup">Set up my cut</a></div>'}
-    <div class="card">
-      <div class="card-head"><h2>Chat</h2>${state.chat.length ? '<button class="btn btn-small" type="button" data-action="clear-chat">Clear</button>' : ''}</div>
+    ${state.goal ? `<section class="coachbox" data-slot="briefing">${briefingHtml()}</section>` : '<p class="small muted">Set up your cut first so the coach knows your plan.</p><a class="btn btn-primary" href="#setup">Set up my cut</a>'}
+    <section class="sec">
+      <div class="h-row"><h2>Chat</h2>${state.chat.length ? '<button class="btn btn-small" type="button" data-action="clear-chat">Clear</button>' : ''}</div>
       <div id="chat-log" class="chat-log" role="log" aria-live="polite" aria-label="Chat with the coach"></div>
       <div class="suggestions">${suggestions.map((s) => `<button class="btn btn-small" type="button" data-action="suggest" data-q="${esc(s)}">${esc(s)}</button>`).join('')}</div>
       <form id="chat-form" novalidate>
@@ -534,8 +616,8 @@ function renderCoach() {
         <textarea id="chat-input" name="q" maxlength="500" placeholder="Ask about food, fluids, sleep or recovery" required></textarea>
         <button class="btn btn-primary btn-block" type="submit">Send</button>
       </form>
-      <p class="small muted">The coach is not a doctor. Dizzy, confused or fainting? Stop and get help: athletic trainer, doctor or 911.</p>
-    </div>`;
+      <p class="fine">The coach is not a doctor. Dizzy, confused or fainting? Stop and get help: athletic trainer, doctor or 911.</p>
+    </section>`;
 }
 
 function renderLearn() {
@@ -545,31 +627,33 @@ function renderLearn() {
   }
   const cls = { not_recommended: 'no', safety: 'safety', story: 'story' };
   const sections = learnData.sections.map((s) => `
-    <h2>${esc(s.title)}</h2>
-    ${s.intro ? `<p class="muted">${esc(s.intro)}</p>` : ''}
-    ${s.cards.map((c) => `
-      <article class="card learn-card ${cls[s.id] || ''}" aria-labelledby="lc-${esc(c.id)}">
-        <h3 id="lc-${esc(c.id)}">${esc(c.title)}</h3>
-        <p>${esc(c.what)}</p>
-        <dl>
-          ${c.healthRisk ? `<dt>Health risk</dt><dd>${esc(c.healthRisk)}</dd>` : ''}
-          ${c.performanceCost ? `<dt>${s.id === 'not_recommended' ? 'Why it hurts performance' : 'Performance'}</dt><dd>${esc(c.performanceCost)}</dd>` : ''}
-          ${c.saferAlternative ? `<dt>${s.id === 'not_recommended' ? 'Do this instead' : 'What to do'}</dt><dd>${esc(c.saferAlternative)}</dd>` : ''}
-        </dl>
-        ${sourcesHtml(c.sources)}
-      </article>`).join('')}`).join('');
+    <section class="sec">
+      <h2>${esc(s.title)}</h2>
+      ${s.intro ? `<p class="intro">${esc(s.intro)}</p>` : ''}
+      ${s.cards.map((c) => `
+        <article class="learn-card ${cls[s.id] || ''}" aria-labelledby="lc-${esc(c.id)}">
+          <h3 id="lc-${esc(c.id)}">${esc(c.title)}</h3>
+          <p>${esc(c.what)}</p>
+          <dl>
+            ${c.healthRisk ? `<dt>Health risk</dt><dd>${esc(c.healthRisk)}</dd>` : ''}
+            ${c.performanceCost ? `<dt>${s.id === 'not_recommended' ? 'Why it hurts performance' : 'Performance'}</dt><dd>${esc(c.performanceCost)}</dd>` : ''}
+            ${c.saferAlternative ? `<dt>${s.id === 'not_recommended' ? 'Do this instead' : 'What to do'}</dt><dd>${esc(c.saferAlternative)}</dd>` : ''}
+          </dl>
+          ${sourcesHtml(c.sources)}
+        </article>`).join('')}
+    </section>`).join('');
   return `
     <h1 id="h-learn">Safety</h1>
     ${sections}
-    <div class="card">
+    <section class="sec">
       <h2>About the data</h2>
-      <p>MakeWeight reads the same metrics WHOOP's developer API provides: recovery score, resting heart rate, HRV, sleep performance and strain. The demo athlete uses that exact format. No wearable? Type in your weight, sleep and resting heart rate.</p>
+      <p class="small muted mt-s">MakeWeight reads the same metrics WHOOP's developer API provides: recovery score, resting heart rate, HRV, sleep performance and strain. The demo athlete uses that exact format. No wearable? Type in your weight, sleep and resting heart rate.</p>
       ${sourcesHtml(['whoop'])}
-    </div>
-    <div class="card">
+    </section>
+    <section class="sec">
       <h2>All sources</h2>
-      <ol class="source-list">${Object.values(SOURCES).map((s) => `<li>${esc(s.full)}${s.url ? ` <a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">Link</a>` : ''}</li>`).join('')}</ol>
-    </div>`;
+      <ol class="source-list mt-s">${Object.values(SOURCES).map((s) => `<li>${esc(s.full)}${s.url ? ` <a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">Link</a>` : ''}</li>`).join('')}</ol>
+    </section>`;
 }
 
 async function loadLearn() {
@@ -588,60 +672,64 @@ function renderSetup() {
   const g = state.goal || {};
   const latest = derived.alertsResult.latest;
   const current = latest?.weightLb ?? g.startWeightLb ?? '';
-  const ft = Number.isFinite(p.heightIn) ? Math.floor(p.heightIn / 12) : '';
-  const inch = Number.isFinite(p.heightIn) ? p.heightIn % 12 : '';
+  const ft = isNum(p.heightIn) ? Math.floor(p.heightIn / 12) : '';
+  const inch = isNum(p.heightIn) ? p.heightIn % 12 : '';
   const weighIn = g.weighInDate && g.weighInDate > derived.today ? g.weighInDate : '';
   const radio = (name, value, label, checked, hint = '') =>
     `<label class="choice"><input type="radio" name="${name}" value="${value}" ${checked ? 'checked' : ''}><span>${esc(label)}${hint ? `<span class="hint">${esc(hint)}</span>` : ''}</span></label>`;
   return `
     <h1 id="h-setup">${state.goal ? 'Edit your goal' : 'Set up your cut'}</h1>
-    <form class="card" id="setup-form" novalidate>
-      <h2>Your goal</h2>
-      <div class="row">
-        <div class="field"><label for="s-current">Current weight (lb)</label><input id="s-current" name="current" type="number" inputmode="decimal" step="0.1" min="60" max="450" value="${esc(current)}" required></div>
-        <div class="field"><label for="s-target">Goal weight (lb)</label><input id="s-target" name="target" type="number" inputmode="decimal" step="0.1" min="60" max="450" value="${esc(g.targetWeightLb ?? '')}" required>
-          <span class="hint">Your weight class plus any allowance.</span></div>
-      </div>
-      <div class="field"><label for="s-date">Weigh-in date</label><input id="s-date" name="weighIn" type="date" min="${esc(addDays(derived.today, 1))}" value="${esc(weighIn)}" required></div>
-      <div id="setup-preview" aria-live="polite"></div>
-      <fieldset>
+    <form id="setup-form" novalidate>
+      <section class="sec">
+        <h2 class="mb">Your goal</h2>
+        <div class="row">
+          <div class="field"><label for="s-current">Current weight (lb)</label><input id="s-current" name="current" type="number" inputmode="decimal" step="0.1" min="60" max="450" value="${esc(current)}" required></div>
+          <div class="field"><label for="s-target">Goal weight (lb)</label><input id="s-target" name="target" type="number" inputmode="decimal" step="0.1" min="60" max="450" value="${esc(g.targetWeightLb ?? '')}" required></div>
+        </div>
+        <p class="hint field-note">Goal = your weight class plus any allowance.</p>
+        <div class="field"><label for="s-date">Weigh-in date</label><input id="s-date" name="weighIn" type="date" min="${esc(addDays(derived.today, 1))}" value="${esc(weighIn)}" required></div>
+        <div id="setup-preview" aria-live="polite"></div>
+      </section>
+      <fieldset class="sec">
         <legend>Time from weigh-in to competing</legend>
         <div class="choices">
           ${Object.entries(WINDOWS).map(([k, w]) => radio('recoveryWindow', k, w.label, (g.recoveryWindow || 'under1h') === k, w.hint)).join('')}
         </div>
       </fieldset>
-      <h2>About you</h2>
-      <p class="small muted">Used only on this device to estimate calories. Never sent to the AI coach.</p>
-      <fieldset>
-        <legend>Sex (for the calorie formula)</legend>
-        <div class="row">${radio('sex', 'male', 'Male', p.sex !== 'female')}${radio('sex', 'female', 'Female', p.sex === 'female')}</div>
-      </fieldset>
-      <div class="row">
-        <div class="field"><label for="s-age">Age</label><input id="s-age" name="age" type="number" inputmode="numeric" min="12" max="70" value="${esc(p.age ?? '')}" required></div>
-        <div class="field">
-          <label for="s-ft">Height</label>
-          <div class="row">
-            <input id="s-ft" name="ft" type="number" inputmode="numeric" min="4" max="7" value="${esc(ft)}" aria-label="Height feet" placeholder="ft" required>
-            <input id="s-in" name="in" type="number" inputmode="numeric" min="0" max="11" value="${esc(inch)}" aria-label="Height inches" placeholder="in" required>
+      <section class="sec">
+        <h2>About you</h2>
+        <p class="hint mb">Used only on this device to estimate calories. Never sent to the AI coach.</p>
+        <fieldset>
+          <legend>Sex (for the calorie formula)</legend>
+          <div class="row">${radio('sex', 'male', 'Male', p.sex !== 'female')}${radio('sex', 'female', 'Female', p.sex === 'female')}</div>
+        </fieldset>
+        <div class="row">
+          <div class="field"><label for="s-age">Age</label><input id="s-age" name="age" type="number" inputmode="numeric" min="12" max="70" value="${esc(p.age ?? '')}" required></div>
+          <div class="field">
+            <label for="s-ft">Height (ft / in)</label>
+            <div class="row">
+              <input id="s-ft" name="ft" type="number" inputmode="numeric" min="4" max="7" value="${esc(ft)}" aria-label="Height feet" placeholder="ft" required>
+              <input id="s-in" name="in" type="number" inputmode="numeric" min="0" max="11" value="${esc(inch)}" aria-label="Height inches" placeholder="in" required>
+            </div>
           </div>
         </div>
-      </div>
-      <div class="field">
-        <label for="s-load">Training load</label>
-        <select id="s-load" name="trainingLoad">
-          <option value="moderate" ${p.trainingLoad === 'moderate' ? 'selected' : ''}>Moderate: practice most days</option>
-          <option value="hard" ${!p.trainingLoad || p.trainingLoad === 'hard' ? 'selected' : ''}>Hard: daily practice (in season)</option>
-          <option value="very_hard" ${p.trainingLoad === 'very_hard' ? 'selected' : ''}>Very hard: two-a-days</option>
-        </select>
-      </div>
-      <div class="field">
-        <label for="s-rhr">Usual resting heart rate (optional)</label>
-        <input id="s-rhr" name="baselineRestingHr" type="number" inputmode="numeric" min="25" max="150" value="${esc(p.baselineRestingHr ?? '')}">
-        <span class="hint">Leave blank and MakeWeight learns it from your first 7 days.</span>
-      </div>
+        <div class="field">
+          <label for="s-load">Training load</label>
+          <select id="s-load" name="trainingLoad">
+            <option value="moderate" ${p.trainingLoad === 'moderate' ? 'selected' : ''}>Moderate: practice most days</option>
+            <option value="hard" ${!p.trainingLoad || p.trainingLoad === 'hard' ? 'selected' : ''}>Hard: daily practice (in season)</option>
+            <option value="very_hard" ${p.trainingLoad === 'very_hard' ? 'selected' : ''}>Very hard: two-a-days</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="s-rhr">Usual resting heart rate (optional)</label>
+          <input id="s-rhr" name="baselineRestingHr" type="number" inputmode="numeric" min="25" max="150" value="${esc(p.baselineRestingHr ?? '')}">
+          <span class="hint">Leave blank and MakeWeight learns it from your first 7 days.</span>
+        </div>
+      </section>
       <p class="form-errors" id="setup-errors" role="alert"></p>
       <button class="btn btn-primary btn-block" type="submit">Build my plan</button>
-      <p class="small muted">Saving starts your plan today from your current weight.</p>
+      <p class="fine">Saving starts your plan today from your current weight.</p>
     </form>`;
 }
 
@@ -657,7 +745,7 @@ function readSetupForm(form) {
     profile: {
       sex: f.get('sex'),
       age: num(f.get('age')),
-      heightIn: Number.isFinite(ft) ? ft * 12 + inch : undefined,
+      heightIn: isNum(ft) ? ft * 12 + inch : undefined,
       trainingLoad: f.get('trainingLoad'),
       baselineRestingHr: num(f.get('baselineRestingHr')),
     },
@@ -669,7 +757,7 @@ function updateSetupPreview() {
   const el = $('#setup-preview');
   if (!form || !el) return;
   const v = readSetupForm(form);
-  if (!Number.isFinite(v.current) || !Number.isFinite(v.target) || !isDateStr(v.weighIn)) {
+  if (!isNum(v.current) || !isNum(v.target) || !isDateStr(v.weighIn)) {
     el.innerHTML = '';
     return;
   }
@@ -679,12 +767,12 @@ function updateSetupPreview() {
     el.innerHTML = `<p class="form-errors">${esc(a.errors.join(' '))}</p>`;
     return;
   }
+  const level = a.status === 'green' ? 'info' : a.status;
   el.innerHTML = `
-    <div class="alert alert-${a.status === 'green' ? 'info' : a.status}">
-      <span class="level">${esc(CUT_TYPES[a.cutType].label)} · ${days} days</span>
-      <strong>${statusPill(a.status)}</strong>
-      <span>${esc(a.reason)}</span>
-      ${a.status === 'red' ? `<span><br>If you save, MakeWeight plans to ${lb(a.safestWeightLb)} instead.</span>` : ''}
+    <div class="flagblock lv-${level}${a.status === 'green' ? ' lv-green' : ''}">
+      <p class="cap">${esc(CUT_TYPES[a.cutType].label)} · ${days} days &nbsp; ${statusPill(a.status)}</p>
+      <p class="plain">${esc(a.reason)}</p>
+      ${a.status === 'red' ? `<p class="plain">If you save, MakeWeight plans to ${lb(a.safestWeightLb)} instead.</p>` : ''}
     </div>`;
 }
 
@@ -703,6 +791,7 @@ function render() {
     const el = $(`#view-${name}`);
     el.hidden = name !== view;
     if (name === view) el.innerHTML = RENDERERS[name]();
+    else if (el.innerHTML) el.innerHTML = ''; // keep only the visible screen in the page
   }
   document.querySelectorAll('.tabbar a').forEach((a) => {
     if (a.dataset.tab === view) a.setAttribute('aria-current', 'page');
@@ -711,13 +800,21 @@ function render() {
   $('#demo-badge').hidden = !state.demo;
   if (view === 'coach') renderChatLog();
   if (view === 'setup') updateSetupPreview();
+  lastView = view;
 }
 
 function onRoute() {
-  if (currentView() === 'recovery') recoveryInput = null; // fresh defaults from the latest plan
+  const view = currentView();
+  // Remember how far down the previous tab was scrolled, so coming back feels seamless.
+  if (lastView && lastView !== view) scrollPositions[lastView] = window.scrollY;
+  if (view === 'recovery') recoveryInput = null; // fresh defaults from the latest plan
   render();
-  window.scrollTo(0, 0);
-  const h = $(`#view-${currentView()} h1`);
+  const el = $(`#view-${view}`);
+  el.classList.remove('view-enter');
+  void el.offsetWidth; // restart the fade-in
+  el.classList.add('view-enter');
+  window.scrollTo(0, view === 'setup' ? 0 : scrollPositions[view] || 0);
+  const h = $(`#view-${view} h1`);
   if (h) {
     h.setAttribute('tabindex', '-1');
     h.focus({ preventScroll: true });
@@ -804,7 +901,7 @@ function handleSubmit(e) {
       if (v !== undefined) entry[k] = v;
     }
     const prev = state.entries.find((x) => x.date === entry.date);
-    if (prev && Number.isFinite(prev.strain)) entry.strain = prev.strain;
+    if (prev && isNum(prev.strain)) entry.strain = prev.strain;
     try {
       commit(upsertEntry(state, entry));
       const reds = derived.alertsResult.alerts.filter((a) => a.level === 'red').length;
@@ -862,7 +959,9 @@ function handleInput(e) {
       heavyDepletion: f.get('heavyDepletion') || recoveryInput.heavyDepletion,
     };
     if (prevWindow !== recoveryInput.window) {
-      render(); // the 12+ hour window shows an extra question
+      const y = window.scrollY;
+      render(); // the hint and the 12+ hour question change with the window
+      window.scrollTo(0, y);
       $(`#view-recovery input[name="window"][value="${recoveryInput.window}"]`)?.focus();
     } else {
       $('#recovery-result').innerHTML = recoveryResultHtml(recoveryInput);

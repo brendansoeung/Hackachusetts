@@ -56,7 +56,8 @@ export function weightChartSvg({ entries = [], plan = null, today = null }) {
   parts.push(`<text class="axis-label" x="${W - PAD.right}" y="${H - 6}" text-anchor="end">${esc(formatDate(last))}</text>`);
   if (Number.isFinite(goal)) {
     parts.push(`<line class="goal-line" x1="${PAD.left}" x2="${W - PAD.right}" y1="${y(goal).toFixed(1)}" y2="${y(goal).toFixed(1)}"/>`);
-    parts.push(`<text class="goal-label" x="${W - PAD.right}" y="${(y(goal) - 4).toFixed(1)}" text-anchor="end">Goal ${goal}</text>`);
+    // Label sits at the left end of the goal line, where it can't collide with the plan line's last point.
+    parts.push(`<text class="goal-label" x="${PAD.left + 4}" y="${(y(goal) - 4).toFixed(1)}" text-anchor="start">Goal ${goal}</text>`);
   }
   if (today && today >= first && today <= last) {
     parts.push(`<line class="today-line" x1="${x(today).toFixed(1)}" x2="${x(today).toFixed(1)}" y1="${PAD.top}" y2="${H - PAD.bottom}"/>`);

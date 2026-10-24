@@ -23,7 +23,8 @@
 - Dates are `'YYYY-MM-DD'` strings (see `js/dates.js`), never Date objects in state.
 - Weights in lb, fluids in oz with mL secondary, nutrition in g/kg internally.
 - Escape all text inserted into HTML (`esc()` in app.js). AI text is escaped, then only `**bold**` is allowed.
-- No inline `style=""` attributes or inline scripts (the CSP in `vercel.json` blocks scripts that aren't from the site itself).
+- No inline scripts (the CSP in `vercel.json` blocks scripts that aren't from the site itself). Inline `style=""` only for computed sizes (progress bar width, phase bar flex, markers); everything else uses classes in `css/styles.css`.
+- Design: "minimal earth" theme. Near-black `#0f0e0c`, warm greys, bone-white text, one tan accent `#c19a6b`. Status colors rust (red flag), ochre (caution), sage (on track), always paired with a word or icon. Headings, labels and numbers use Barlow Condensed (self-hosted in `/fonts`, OFL license); body text uses the system font. Prefer thin divider lines and rows over boxed cards.
 - Accessibility: every input has a label, 48px tap targets, `aria-live` for alerts/chat, status shown with text not just color.
 
 ## Security

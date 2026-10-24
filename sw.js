@@ -2,11 +2,14 @@
 // Network first (so new deploys show up right away), falling back to the cache.
 // The AI coach endpoint is never cached.
 
-const CACHE = 'makeweight-v1';
+const CACHE = 'makeweight-v2';
 const SHELL = [
   '/',
   '/index.html',
   '/css/styles.css',
+  '/fonts/barlow-condensed-latin-500.woff2',
+  '/fonts/barlow-condensed-latin-600.woff2',
+  '/fonts/barlow-condensed-latin-700.woff2',
   '/manifest.webmanifest',
   '/icons/icon.svg',
   '/icons/icon-192.png',

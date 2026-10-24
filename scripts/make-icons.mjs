@@ -1,13 +1,13 @@
 // Draws the MakeWeight app icons as PNG files (no image tools needed).
-// Same design as icons/icon.svg: amber ring + white down arrow on dark navy.
+// Same design as icons/icon.svg: tan ring + bone-white down arrow on near-black.
 // Run with: node scripts/make-icons.mjs
 
 import { writeFileSync } from 'node:fs';
 import { deflateSync } from 'node:zlib';
 
-const BG = [11, 18, 32];
-const RING = [251, 191, 36];
-const ARROW = [232, 237, 246];
+const BG = [15, 14, 12];
+const RING = [193, 154, 107];
+const ARROW = [236, 230, 220];
 
 // CRC32 for PNG chunks.
 const CRC_TABLE = Array.from({ length: 256 }, (_, n) => {

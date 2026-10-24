@@ -48,7 +48,7 @@ Weight cutting is part of wrestling, and most athletes learn it from teammates. 
 - **Spec-driven build.** The plan lives in [`.kiro/specs/makeweight/`](.kiro/specs/makeweight/) (requirements, design and tasks), and Kiro worked through the tasks in order.
 - **Steering files.** [`.kiro/steering/product.md`](.kiro/steering/product.md) holds the safety rules, banned methods and coach tone. [`.kiro/steering/tech.md`](.kiro/steering/tech.md) holds the stack and conventions. Every Kiro session follows them.
 - **Hooks.** `test-on-save` runs the full test suite on every JS/JSON save. `safety-review` makes Kiro re-check any change to a safety-critical file against the product rules.
-- **AI-written tests.** 82 tests (Node's built-in runner) cover every safety boundary, plan invariant, alert threshold, recovery limit, data validation, the coach's validation, rate limit and safety prompt, plus a simulated-browser walkthrough of every screen.
+- **AI-written tests.** 88 tests (Node's built-in runner) cover every safety boundary, plan invariant, alert threshold, recovery limit, data validation, the coach's validation, rate limit and safety prompt, plus a simulated-browser walkthrough of every screen.
 - **Source checking.** Kiro verified every citation before it went into the app and dropped claims it couldn't confirm.
 
 ## Run it locally
@@ -82,7 +82,8 @@ To use the AI coach locally, copy `.env.example` to `.env` and paste a free Gemi
 index.html, css/, js/       the app (no framework, no build step)
 api/coach.js                Vercel serverless function for the AI coach
 data/                       demo athlete (WHOOP format) + Safety tab content
-tests/                      82 tests, run with npm test
+tests/                      88 tests, run with npm test
+fonts/                      Barlow Condensed (self-hosted, SIL Open Font License)
 scripts/                    local dev server, demo data and icon generators
 .kiro/                      Kiro specs, steering and hooks
 ```

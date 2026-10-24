@@ -9,6 +9,7 @@ node_modules/
 
 # Local scratch files
 .test-output.txt
+tmp-*
 *.log
 .DS_Store
 Thumbs.db
