@@ -387,7 +387,6 @@ details.more[open] > summary { margin-bottom: 6px; }
 .learn-card { border-left: 3px solid var(--line-strong); padding: 2px 0 2px 14px; margin: 14px 0 22px; }
 .learn-card.no { border-color: var(--rust); }
 .learn-card.safety { border-color: var(--ochre); }
-.learn-card.story { border-color: var(--tan); }
 .learn-card > p { color: var(--text-2); font-size: 14.5px; }
 .learn-card > p.sources { font-size: 12px; color: var(--faint); }
 .learn-card dl { margin: 6px 0 0; }

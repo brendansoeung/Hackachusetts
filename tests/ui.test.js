@@ -129,7 +129,8 @@ test('learn screen renders every safety card with sources', async () => {
   await go('#learn');
   await flush(6);
   const cards = view('learn').querySelectorAll('.learn-card');
-  assert.ok(cards.length >= 12);
+  assert.ok(cards.length >= 11, `expected 8 method cards + 3 safety cards, got ${cards.length}`);
+  assert.doesNotMatch(view('learn').textContent, /\[FOUNDER/, 'no placeholder text is shown');
   for (const c of cards) assert.ok(c.querySelector('.sources'), 'card has a source line');
   assert.match(view('learn').textContent, /Forced vomiting/);
 });

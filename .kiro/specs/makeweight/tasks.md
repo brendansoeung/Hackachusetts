@@ -10,13 +10,13 @@
 - [x] 4. Data layer: localStorage, manual log, WHOOP-format demo athlete, backup export/import, SVG weight chart
 - [x] 5. Alerts engine and Today dashboard (wearable red flags, rate of loss, water cap, pace, short window), plan easing
 - [x] 6. Weigh-in recovery planner (under 1 h, 1 to 6 h, 12+ h, between matches) with food examples
-- [x] 7. Safety tab: not-recommended cards, water loading warning, stop-and-get-help, disclaimer, "my story" placeholder; sources verified (NFHS, CDC 1998, NATA 2017, MedlinePlus)
+- [x] 7. Safety tab: not-recommended cards, water loading warning, stop-and-get-help, disclaimer; sources verified (NFHS, CDC 1998, NATA 2017, MedlinePlus). The founder's story lives in the demo video instead of the app.
 - [x] 8. AI coach backend `api/coach.js` (Gemini Interactions API, validation, rate limit, safety prompt)
 - [x] 8.1 Add GEMINI_API_KEY in Vercel (Production) and run a real request: live chat answer confirmed ("Should I take a salt bath?" is firmly discouraged)
 - [x] 8.2 Model fallback: gemini-flash-latest hit its free-tier limit and gemini-2.5-flash was retired, so the backup is now gemini-flash-lite-latest, with a 1-minute quota cooldown
 - [x] 9. Coach UI: privacy opt-in, cached briefing, chat, rules-based fallback
 - [x] 10. PWA: manifest, icons, service worker, phone-first dark theme, accessibility labels
-- [ ] 10.1 Install on a real phone and check offline
+- [x] 10.1 Install on a real phone (iPhone home-screen app checked; fixed tab bar on short pages and date field overlap)
 - [x] 10.2 Redesign: "minimal earth" theme (near-black, warm greys, tan accent, Barlow Condensed headings), WHOOP-style wearable row, grouped red flags, Plan phase bar, Recovery segmented switch; tabs remember scroll position and fade in
 - [ ] 11. (Stretch, only if 1 to 10 are done by 4 PM) Firebase Google sign-in + Firestore sync with per-user security rules
-- [ ] 12. Submission: README + "How Kiro was used", final deploy, demo video script (3 min or less), fill in "My story"
+- [ ] 12. Submission: README + "How Kiro was used", final deploy, demo video (3 min or less), submission form

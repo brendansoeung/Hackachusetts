@@ -111,21 +111,6 @@
           "sources": ["mw"]
         }
       ]
-    },
-    {
-      "id": "story",
-      "title": "Why I built this",
-      "cards": [
-        {
-          "id": "my_story",
-          "title": "My story",
-          "what": "[FOUNDER: write 2 to 3 sentences here in your own words. Example: I wrestled 106 in high school and placed at states. I cut from as high as 120, made mistakes like forced vomiting and salt baths, overate before wrestling first, and cramped from bad electrolytes. MakeWeight is the tool I wish I had.]",
-          "healthRisk": "",
-          "performanceCost": "",
-          "saferAlternative": "",
-          "sources": ["mw"]
-        }
-      ]
     }
   ]
 }

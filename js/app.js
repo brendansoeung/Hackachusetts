@@ -626,7 +626,7 @@ function renderLearn() {
     loadLearn();
     return '<h1 id="h-learn">Safety</h1><p class="loading muted">Loading</p>';
   }
-  const cls = { not_recommended: 'no', safety: 'safety', story: 'story' };
+  const cls = { not_recommended: 'no', safety: 'safety' };
   const sections = learnData.sections.map((s) => `
     <section class="sec">
       <h2>${esc(s.title)}</h2>
